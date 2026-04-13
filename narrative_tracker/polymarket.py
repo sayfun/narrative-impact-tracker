@@ -94,25 +94,32 @@ def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
                 all_rows.append(row)
                 seen_ids.add(row["condition_id"])
 
-    # Page 1 & 2: active markets by 24h volume (covers ~400 currently trading markets)
+    # Active markets: two pages by 24h volume (~400 currently trading markets)
     _fetch_page({"limit": 200, "active": "true", "closed": "false",
                  "order": "volume24hr", "ascending": "false", "offset": 0})
     _fetch_page({"limit": 200, "active": "true", "closed": "false",
                  "order": "volume24hr", "ascending": "false", "offset": 200})
 
-    matched = [r for r in all_rows if r["_score"] > 0]
+    # Closed/resolved markets: always fetch, sorted by all-time volume.
+    # This ensures historical markets (e.g. Trump 2024 election) appear in
+    # results regardless of how many active markets partially match the query.
+    _fetch_page({"limit": 200, "closed": "true",
+                 "order": "volume", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "closed": "true",
+                 "order": "volume", "ascending": "false", "offset": 200})
 
-    # If still few results, include closed/resolved markets (for historical research)
-    if len(matched) < 3:
-        _fetch_page({"limit": 200, "order": "volume", "ascending": "false"})
-        matched = [r for r in all_rows if r["_score"] > 0]
+    matched = [r for r in all_rows if r["_score"] > 0]
 
     # Return matched results; empty DataFrame if nothing found (caller handles messaging)
     results = matched  # intentionally empty if no match — don't return irrelevant markets
 
     df = pd.DataFrame(results) if results else pd.DataFrame()
     if not df.empty:
-        df["_sort"] = df["_score"] * 1e14 + df["active"].astype(int) * 1e12 + df["volume_24hr"]
+        # Sort: text relevance score first, then active status, then all-time volume.
+        # Active markets rank above closed ones at equal score, but a highly
+        # relevant closed market (e.g. 2024 election) beats a loosely matching
+        # active market.
+        df["_sort"] = df["_score"] * 1e14 + df["active"].astype(int) * 1e12 + df["volume"]
         df = (df.sort_values("_sort", ascending=False)
                 .drop(columns=["_score", "_sort"])
                 .head(limit)
