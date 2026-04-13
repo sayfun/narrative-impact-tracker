@@ -94,23 +94,25 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
                 all_rows.append(row)
                 seen_ids.add(row["condition_id"])
 
-    if include_active:
-        _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                     "order": "volume24hr", "ascending": "false", "offset": 0})
-        _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                     "order": "volume24hr", "ascending": "false", "offset": 200})
+    # Always fetch all pools — the Gamma API's filter parameters are unreliable
+    # (same issue as the `q` search param). We fetch everything and filter
+    # client-side using the active/closed fields captured in each row.
 
-    if include_closed:
-        # The Gamma API uses two different fields for resolved markets:
-        # some have closed=true, others have active=false. Fetch both.
-        _fetch_page({"limit": 200, "closed": "true",
-                     "order": "volume", "ascending": "false", "offset": 0})
-        _fetch_page({"limit": 200, "closed": "true",
-                     "order": "volume", "ascending": "false", "offset": 200})
-        _fetch_page({"limit": 200, "active": "false",
-                     "order": "volume", "ascending": "false", "offset": 0})
-        _fetch_page({"limit": 200, "active": "false",
-                     "order": "volume", "ascending": "false", "offset": 200})
+    # Active markets by 24h volume
+    _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                 "order": "volume24hr", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                 "order": "volume24hr", "ascending": "false", "offset": 200})
+
+    # Resolved/historical markets by all-time volume — two API field variants
+    _fetch_page({"limit": 200, "closed": "true",
+                 "order": "volume", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "closed": "true",
+                 "order": "volume", "ascending": "false", "offset": 200})
+    _fetch_page({"limit": 200, "active": "false",
+                 "order": "volume", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "active": "false",
+                 "order": "volume", "ascending": "false", "offset": 200})
 
     matched = [r for r in all_rows if r["_score"] > 0]
 
@@ -118,6 +120,17 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
         return pd.DataFrame()
 
     df = pd.DataFrame(matched)
+
+    # Client-side filter by active/closed status
+    if include_active and not include_closed:
+        df = df[df["active"] == True]
+    elif include_closed and not include_active:
+        df = df[(df["active"] == False) | (df["closed"] == True)]
+    # if both or neither are checked, return everything matched
+
+    if df.empty:
+        return df.reset_index(drop=True)
+
     # Sort: text relevance first (dominant), then active status as tiebreaker,
     # then all-time volume. A closed market that matches 4/4 query words beats
     # an active market that only matches 2/4.
