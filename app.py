@@ -440,7 +440,7 @@ def render_sidebar():
                 q_display = (q[:62] + "…") if len(q) > 62 else q
                 return f"{q_display}  [{tag}, ${vol:,.0f}/24h]"
 
-            options = [_option_label(row) for _, row in markets_df.iterrows()]
+            options = [_option_label(row.to_dict()) for _, row in markets_df.iterrows()]
             chosen = st.sidebar.selectbox(
                 "Select market",
                 options=options,
@@ -860,7 +860,7 @@ It implements a three-mode enrollment framework connecting financial, discursive
 If you use this tool in published research:
 
 ```
-Funk, S. H. (2025). Narrative Impact Tracker [Software].
+Funk, S. H. (2026). Narrative Impact Tracker [Software].
 https://github.com/sayfun/narrative-impact-tracker
 ```
 

@@ -166,13 +166,13 @@ If you use this tool in published research, please cite:
 @software{narrative_impact_tracker,
   author  = {Funk, Sascha H.},
   title   = {Narrative Impact Tracker: Empirically measuring prediction market influence on media narratives},
-  year    = {2025},
+  year    = {2026},
   url     = {https://github.com/sayfun/narrative-impact-tracker},
   version = {1.0.0}
 }
 ```
 
-Or in-text: Funk, S. H. (2025). *Narrative Impact Tracker* [Software]. https://github.com/sayfun/narrative-impact-tracker
+Or in-text: Funk, S. H. (2026). *Narrative Impact Tracker* [Software]. https://github.com/sayfun/narrative-impact-tracker
 
 ---
 
