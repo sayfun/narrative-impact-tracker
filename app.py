@@ -69,6 +69,8 @@ def run_pipeline_cached(
     fetch_articles: bool,
     market_index: int = 0,
     mc_api_key: str = "",
+    manual_token_id: str = "",
+    manual_market_question: str = "",
 ):
     """
     Cached wrapper around NarrativePipeline.collect().
@@ -96,6 +98,8 @@ def run_pipeline_cached(
         shock_threshold = shock_threshold,
         fetch_articles  = fetch_articles,
         market_index    = market_index,
+        manual_token_id = manual_token_id,
+        manual_market_question = manual_market_question,
     )
     pipe.collect(verbose=False)
 
@@ -606,12 +610,35 @@ def render_sidebar():
             market_question = selected_row["question"]
             token_ids       = selected_row["token_ids"]
         elif markets_df is not None and markets_df.empty:
-            st.sidebar.error(
-                f"No Polymarket markets found matching **\"{search_query}\"**.\n\n"
-                "Try different keywords — e.g. `Iran attack`, `Fed rate cut`, "
-                "`Ukraine ceasefire`. Browse all active markets at "
-                "[polymarket.com](https://polymarket.com)."
+            st.sidebar.warning(
+                f"No markets found for **\"{search_query}\"** via API search.\n\n"
+                "Older resolved markets (e.g. 2024 US election) are not always "
+                "accessible through Polymarket's listing API. Use **manual token ID** below."
             )
+
+    # ── Manual token ID fallback (for archived/historical markets) ──
+    with st.sidebar.expander("Use token ID directly (for archived markets)"):
+        st.markdown(
+            "For historical markets not found by search (e.g. 2024 US election), "
+            "paste the YES token ID from the Polymarket market URL or CLOB API.\n\n"
+            "**How to find it:** Go to the market on polymarket.com → open browser devtools "
+            "→ Network tab → look for the CLOB API call → copy the first value from `clobTokenIds`.\n\n"
+            "Example (Trump 2024 winner): `21742633143463906290569050155826389240456629048843189025793797045763932443804`"
+        )
+        manual_token = st.text_input(
+            "YES token ID",
+            value="",
+            placeholder="Paste token ID here…",
+        )
+        manual_question = st.text_input(
+            "Market label (for display)",
+            value="",
+            placeholder="e.g. Presidential Election Winner 2024",
+        )
+        if manual_token and manual_question:
+            market_question = manual_question
+            token_ids       = [manual_token.strip()]
+            st.success(f"Using manual token: {manual_token[:20]}…")
 
     # ── Step 3: topic terms for GDELT ──
     st.sidebar.divider()
@@ -684,6 +711,7 @@ def render_sidebar():
         "shock_threshold":  shock_threshold / 100,
         "fetch_articles":   fetch_articles,
         "market_index":     market_index,
+        "manual_token_id":  manual_token if (manual_token and manual_question) else "",
         "mc_api_key":       mc_api_key,
         "run":              run,
     }
@@ -1100,14 +1128,16 @@ https://github.com/sayfun/narrative-impact-tracker
         st.write("Searching Polymarket…")
         try:
             result = run_pipeline_cached(
-                market_query        = inputs["market_query"],
-                topic_terms_tuple   = tuple(inputs["topic_terms"]),
-                start               = inputs["start"],
-                end                 = inputs["end"],
-                shock_threshold     = inputs["shock_threshold"],
-                fetch_articles      = inputs["fetch_articles"],
-                market_index        = inputs["market_index"],
-                mc_api_key          = inputs.get("mc_api_key", ""),
+                market_query           = inputs["market_query"],
+                topic_terms_tuple      = tuple(inputs["topic_terms"]),
+                start                  = inputs["start"],
+                end                    = inputs["end"],
+                shock_threshold        = inputs["shock_threshold"],
+                fetch_articles         = inputs["fetch_articles"],
+                market_index           = inputs["market_index"],
+                mc_api_key             = inputs.get("mc_api_key", ""),
+                manual_token_id        = inputs.get("manual_token_id", ""),
+                manual_market_question = inputs.get("market_question", ""),
             )
         except RuntimeError as e:
             status.update(label="Failed", state="error")

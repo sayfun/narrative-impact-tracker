@@ -82,6 +82,8 @@ class NarrativePipeline:
         shock_window:   int = 2,           # days over which movement is measured
         fetch_articles: bool = True,       # set False for faster runs without tone data
         article_window_days: int = 7,      # GDELT pagination window
+        manual_token_id: str = "",         # bypass search; use this YES token directly
+        manual_market_question: str = "",  # display label when using manual token
     ):
         self.market_query   = market_query
         self.topic_terms    = topic_terms
@@ -90,11 +92,13 @@ class NarrativePipeline:
             pd.Timestamp(end, tz="UTC") if isinstance(end, str) and end
             else pd.Timestamp.now(tz="UTC")
         )
-        self.market_index      = market_index
-        self.shock_threshold   = shock_threshold
-        self.shock_window      = shock_window
-        self._fetch_articles   = fetch_articles
+        self.market_index        = market_index
+        self.shock_threshold     = shock_threshold
+        self.shock_window        = shock_window
+        self._fetch_articles     = fetch_articles
         self.article_window_days = article_window_days
+        self.manual_token_id     = manual_token_id.strip()
+        self.manual_market_question = manual_market_question.strip()
 
         # populated by collect()
         self.market_meta   = None
@@ -110,17 +114,29 @@ class NarrativePipeline:
     def collect(self, verbose: bool = True) -> "NarrativePipeline":
         """Fetch all data from APIs and build the aligned DataFrame."""
 
-        # 1. Discover market
-        if verbose:
-            print(f"[1/4] Searching Polymarket: '{self.market_query}' …")
-        markets = search_markets(self.market_query)
-        if markets.empty:
-            raise RuntimeError(f"No Polymarket markets found for: '{self.market_query}'")
-        self.market_meta = markets.iloc[self.market_index]
-        if verbose:
-            print(f"      → Using: {self.market_meta['question'][:80]}")
-            print(f"        Volume: ${self.market_meta['volume']:,.0f}  "
-                  f"| Token IDs: {self.market_meta['token_ids']}")
+        # 1. Discover market (or use manual token directly)
+        if self.manual_token_id:
+            if verbose:
+                print(f"[1/4] Using manual token ID: {self.manual_token_id[:20]}…")
+            self.market_meta = pd.Series({
+                "question":    self.manual_market_question or "Manual market",
+                "token_ids":   [self.manual_token_id],
+                "volume":      0,
+                "volume_24hr": 0,
+                "active":      False,
+                "closed":      True,
+            })
+        else:
+            if verbose:
+                print(f"[1/4] Searching Polymarket: '{self.market_query}' …")
+            markets = search_markets(self.market_query)
+            if markets.empty:
+                raise RuntimeError(f"No Polymarket markets found for: '{self.market_query}'")
+            self.market_meta = markets.iloc[self.market_index]
+            if verbose:
+                print(f"      → Using: {self.market_meta['question'][:80]}")
+                print(f"        Volume: ${self.market_meta['volume']:,.0f}  "
+                      f"| Token IDs: {self.market_meta['token_ids']}")
 
         # 2. Fetch probability history (YES token)
         if verbose:
