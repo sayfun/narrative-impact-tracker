@@ -110,25 +110,23 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
                 all_rows.append(row)
                 seen_ids.add(row["condition_id"])
 
-    # Always fetch all pools — the Gamma API's filter parameters are unreliable
-    # (same issue as the `q` search param). We fetch everything and filter
-    # client-side using the active/closed fields captured in each row.
+    # The Gamma API's status filter params (active=, closed=) are unreliable —
+    # large resolved markets like the 2024 US election don't reliably appear
+    # in closed=true or active=false pages. Instead we fetch from multiple
+    # sort orders with NO status filter and let client-side logic handle it.
 
-    # Active markets by 24h volume
+    # Pool A: currently trading, ranked by 24h volume
     _fetch_page({"limit": 200, "active": "true", "closed": "false",
                  "order": "volume24hr", "ascending": "false", "offset": 0})
     _fetch_page({"limit": 200, "active": "true", "closed": "false",
                  "order": "volume24hr", "ascending": "false", "offset": 200})
 
-    # Resolved/historical markets by all-time volume — two API field variants
-    _fetch_page({"limit": 200, "closed": "true",
-                 "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "closed": "true",
-                 "order": "volume", "ascending": "false", "offset": 200})
-    _fetch_page({"limit": 200, "active": "false",
-                 "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "active": "false",
-                 "order": "volume", "ascending": "false", "offset": 200})
+    # Pool B: everything sorted by all-time volume (no status filter) —
+    # this is where the big historical markets ($1B+ volume) appear
+    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 200})
+    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 400})
+    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 600})
 
     # Require at least 2 matching words to filter out single-word noise
     # (e.g. "winner" alone matching every esports market when searching
