@@ -71,13 +71,28 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
             "token_ids":    _parse_token_ids(m.get("clobTokenIds")),
         }
 
-    # Tokenise query into words for client-side matching
-    query_words = [w.lower() for w in query.split() if len(w) > 2]
+    # Stopwords that are too common to be meaningful match signals
+    _STOPWORDS = {
+        "will", "the", "who", "what", "when", "which", "that", "this",
+        "with", "from", "have", "has", "been", "are", "was", "were",
+        "for", "and", "not", "but", "can", "its", "his", "her", "they",
+        "win",  # too short and a substring of "winner", "twins", etc.
+        "set",  # matches esports "Set 1", "Set 2"
+    }
+
+    # Tokenise query — keep only meaningful content words (len > 3, not stopwords)
+    query_words = [
+        w.lower() for w in query.split()
+        if len(w) > 3 and w.lower() not in _STOPWORDS
+    ]
 
     def _score(question: str) -> int:
-        """Count how many query words appear in the question (case-insensitive)."""
+        """Count how many query words appear as whole words in the question."""
         q_lower = question.lower()
-        return sum(1 for w in query_words if w in q_lower)
+        return sum(
+            1 for w in query_words
+            if re.search(r'\b' + re.escape(w) + r'\b', q_lower)
+        )
 
     url = f"{GAMMA_BASE}/markets"
     all_rows: list[dict] = []
