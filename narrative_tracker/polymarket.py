@@ -35,33 +35,17 @@ def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
     """
     Search Polymarket for markets matching *query*.
 
-    Uses the events API (sorted by volume) to find the most relevant markets.
-    Falls back to the markets API for queries that don't match events.
+    NOTE: The Polymarket Gamma API's `q` text-search parameter is unreliable —
+    it ignores the query and returns markets by volume. We therefore fetch
+    active markets in bulk and filter client-side by matching query words
+    against the question text. Falls back to closed markets if needed.
 
     Returns a DataFrame with columns:
-        condition_id, question, end_date_iso, active, volume, liquidity,
-        token_ids   (list of [YES_token_id, NO_token_id])
-
-    Usage
-    -----
-    >>> markets = search_markets("presidential election 2024")
-    >>> print(markets[["question", "volume"]].head())
+        condition_id, question, end_date_iso, active, volume, volume_24hr,
+        liquidity, token_ids
     """
-    # Strategy 1: search events (aggregated markets) sorted by volume
-    events_url = f"{GAMMA_BASE}/events"
-    events_params = {
-        "q":          query,
-        "limit":      limit,
-        "closed":     "true",
-        "order":      "volume",
-        "ascending":  "false",
-    }
-    events_resp = requests.get(events_url, params=events_params, timeout=REQUEST_TIMEOUT)
-    events_resp.raise_for_status()
-    events_data = events_resp.json() or []
 
     def _parse_token_ids(raw) -> list:
-        """clobTokenIds comes back as a JSON string from the Gamma API."""
         if raw is None:
             return []
         if isinstance(raw, list):
@@ -74,44 +58,73 @@ def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
                 return []
         return []
 
-    rows = []
-    for event in events_data:
-        for m in event.get("markets", []):
-            # clobTokenIds is a JSON-encoded string in the Gamma API
-            token_ids = _parse_token_ids(m.get("clobTokenIds"))
-            rows.append({
-                "condition_id": m.get("conditionId", ""),
-                "question":     m.get("question", ""),
-                "end_date_iso": m.get("endDateIso") or m.get("endDate", ""),
-                "active":       m.get("active", False),
-                "closed":       m.get("closed", False),
-                "volume":       float(m.get("volume", 0) or 0),
-                "liquidity":    float(m.get("liquidityClob") or m.get("liquidity", 0) or 0),
-                "token_ids":    token_ids,
-            })
+    def _market_row(m: dict) -> dict:
+        return {
+            "condition_id": m.get("conditionId", ""),
+            "question":     m.get("question", ""),
+            "end_date_iso": m.get("endDateIso") or m.get("endDate", ""),
+            "active":       m.get("active", False),
+            "closed":       m.get("closed", False),
+            "volume":       float(m.get("volume", 0) or 0),
+            "volume_24hr":  float(m.get("volume24hr", 0) or 0),
+            "liquidity":    float(m.get("liquidityClob") or m.get("liquidity", 0) or 0),
+            "token_ids":    _parse_token_ids(m.get("clobTokenIds")),
+        }
 
-    if not rows:
-        # Strategy 2: fall back to markets API
-        url = f"{GAMMA_BASE}/markets"
-        params = {"q": query, "limit": limit, "closed": "true"}
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        for m in resp.json():
-            token_ids = _parse_token_ids(m.get("clobTokenIds"))
-            rows.append({
-                "condition_id": m.get("conditionId", ""),
-                "question":     m.get("question", ""),
-                "end_date_iso": m.get("endDateIso") or m.get("endDate", ""),
-                "active":       m.get("active", False),
-                "closed":       m.get("closed", False),
-                "volume":       float(m.get("volume", 0) or 0),
-                "liquidity":    float(m.get("liquidity", 0) or 0),
-                "token_ids":    token_ids,
-            })
+    # Tokenise query into words for client-side matching
+    query_words = [w.lower() for w in query.split() if len(w) > 2]
 
-    df = pd.DataFrame(rows)
+    def _score(question: str) -> int:
+        """Count how many query words appear in the question (case-insensitive)."""
+        q_lower = question.lower()
+        return sum(1 for w in query_words if w in q_lower)
+
+    url = f"{GAMMA_BASE}/markets"
+    all_rows = []
+
+    # Fetch active markets (up to 200) sorted by 24h volume
+    resp = requests.get(url, params={
+        "limit": 200, "active": "true", "closed": "false",
+        "order": "volume24hr", "ascending": "false",
+    }, timeout=REQUEST_TIMEOUT)
+    if resp.status_code == 200:
+        for m in resp.json() or []:
+            row = _market_row(m)
+            if row["token_ids"] and row["question"]:
+                row["_score"] = _score(row["question"])
+                all_rows.append(row)
+
+    # Filter to matching markets; if fewer than 3 match, fall back to all active
+    matched = [r for r in all_rows if r["_score"] > 0]
+
+    if len(matched) < 3:
+        # Also search closed markets for historical research use
+        resp2 = requests.get(url, params={
+            "limit": 200, "order": "volume", "ascending": "false",
+        }, timeout=REQUEST_TIMEOUT)
+        if resp2.status_code == 200:
+            seen = {r["condition_id"] for r in all_rows}
+            for m in resp2.json() or []:
+                row = _market_row(m)
+                if row["token_ids"] and row["question"] and row["condition_id"] not in seen:
+                    row["_score"] = _score(row["question"])
+                    if row["_score"] > 0:
+                        matched.append(row)
+                    seen.add(row["condition_id"])
+
+    # If nothing matched at all, return top active markets unfiltered
+    results = matched if matched else all_rows
+
+    df = pd.DataFrame(results) if results else pd.DataFrame()
     if not df.empty:
-        df = df.sort_values("volume", ascending=False).reset_index(drop=True)
+        if "_score" not in df.columns:
+            df["_score"] = 0
+        # Sort: best text match first, then active-first, then 24h volume
+        df["_sort"] = df["_score"] * 1e14 + df["active"].astype(int) * 1e12 + df["volume_24hr"]
+        df = (df.sort_values("_sort", ascending=False)
+                .drop(columns=["_score", "_sort"])
+                .head(limit)
+                .reset_index(drop=True))
     return df
 
 
