@@ -31,7 +31,7 @@ REQUEST_TIMEOUT  = 30            # seconds
 
 # ── market discovery ─────────────────────────────────────────────────────────
 
-def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
+def search_markets(query: str, limit: int = 20, include_active: bool = True, include_closed: bool = True) -> pd.DataFrame:
     """
     Search Polymarket for markets matching *query*.
 
@@ -94,25 +94,23 @@ def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
                 all_rows.append(row)
                 seen_ids.add(row["condition_id"])
 
-    # Active markets: two pages by 24h volume (~400 currently trading markets)
-    _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                 "order": "volume24hr", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                 "order": "volume24hr", "ascending": "false", "offset": 200})
+    if include_active:
+        _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                     "order": "volume24hr", "ascending": "false", "offset": 0})
+        _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                     "order": "volume24hr", "ascending": "false", "offset": 200})
 
-    # Resolved/historical markets by all-time volume.
-    # The Gamma API uses two different fields for resolved markets:
-    # some have closed=true, others have active=false with closed=false.
-    # Fetch both to ensure large historical markets (e.g. 2024 US election,
-    # $1.5B volume) always appear when relevant.
-    _fetch_page({"limit": 200, "closed": "true",
-                 "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "closed": "true",
-                 "order": "volume", "ascending": "false", "offset": 200})
-    _fetch_page({"limit": 200, "active": "false",
-                 "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "active": "false",
-                 "order": "volume", "ascending": "false", "offset": 200})
+    if include_closed:
+        # The Gamma API uses two different fields for resolved markets:
+        # some have closed=true, others have active=false. Fetch both.
+        _fetch_page({"limit": 200, "closed": "true",
+                     "order": "volume", "ascending": "false", "offset": 0})
+        _fetch_page({"limit": 200, "closed": "true",
+                     "order": "volume", "ascending": "false", "offset": 200})
+        _fetch_page({"limit": 200, "active": "false",
+                     "order": "volume", "ascending": "false", "offset": 0})
+        _fetch_page({"limit": 200, "active": "false",
+                     "order": "volume", "ascending": "false", "offset": 200})
 
     matched = [r for r in all_rows if r["_score"] > 0]
 

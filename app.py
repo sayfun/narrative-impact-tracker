@@ -534,9 +534,9 @@ def build_html_report(result: dict, gdelt_query: str, start: str, end: str) -> b
 # ── market search helper (cached separately so it's fast) ────────────────────
 
 @st.cache_data(show_spinner=False, ttl=300)
-def search_markets_cached(query: str):
+def search_markets_cached(query: str, include_active: bool = True, include_closed: bool = True):
     from narrative_tracker.polymarket import search_markets
-    df = search_markets(query, limit=15)
+    df = search_markets(query, limit=15, include_active=include_active, include_closed=include_closed)
     valid = df[df["token_ids"].apply(lambda x: len(x) > 0)].reset_index(drop=True)
     return valid
 
@@ -561,6 +561,9 @@ def render_sidebar():
         value="presidential election winner 2024",
         help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'",
     )
+    _fc1, _fc2 = st.sidebar.columns(2)
+    include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets")
+    include_closed = _fc2.checkbox("Closed", value=False, help="Include resolved/closed markets (for historical analysis)")
 
     # ── Step 2: pick from real market names ──
     market_index = 0
@@ -571,7 +574,7 @@ def render_sidebar():
         with st.sidebar:
             with st.spinner("Searching markets…"):
                 try:
-                    markets_df = search_markets_cached(search_query)
+                    markets_df = search_markets_cached(search_query, include_active=include_active, include_closed=include_closed)
                 except Exception:
                     markets_df = None
 
