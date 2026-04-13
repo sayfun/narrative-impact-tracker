@@ -80,46 +80,38 @@ def search_markets(query: str, limit: int = 20) -> pd.DataFrame:
         return sum(1 for w in query_words if w in q_lower)
 
     url = f"{GAMMA_BASE}/markets"
-    all_rows = []
+    all_rows: list[dict] = []
+    seen_ids: set[str] = set()
 
-    # Fetch active markets (up to 200) sorted by 24h volume
-    resp = requests.get(url, params={
-        "limit": 200, "active": "true", "closed": "false",
-        "order": "volume24hr", "ascending": "false",
-    }, timeout=REQUEST_TIMEOUT)
-    if resp.status_code == 200:
+    def _fetch_page(params: dict) -> None:
+        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return
         for m in resp.json() or []:
             row = _market_row(m)
-            if row["token_ids"] and row["question"]:
+            if row["token_ids"] and row["question"] and row["condition_id"] not in seen_ids:
                 row["_score"] = _score(row["question"])
                 all_rows.append(row)
+                seen_ids.add(row["condition_id"])
 
-    # Filter to matching markets; if fewer than 3 match, fall back to all active
+    # Page 1 & 2: active markets by 24h volume (covers ~400 currently trading markets)
+    _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                 "order": "volume24hr", "ascending": "false", "offset": 0})
+    _fetch_page({"limit": 200, "active": "true", "closed": "false",
+                 "order": "volume24hr", "ascending": "false", "offset": 200})
+
     matched = [r for r in all_rows if r["_score"] > 0]
 
+    # If still few results, include closed/resolved markets (for historical research)
     if len(matched) < 3:
-        # Also search closed markets for historical research use
-        resp2 = requests.get(url, params={
-            "limit": 200, "order": "volume", "ascending": "false",
-        }, timeout=REQUEST_TIMEOUT)
-        if resp2.status_code == 200:
-            seen = {r["condition_id"] for r in all_rows}
-            for m in resp2.json() or []:
-                row = _market_row(m)
-                if row["token_ids"] and row["question"] and row["condition_id"] not in seen:
-                    row["_score"] = _score(row["question"])
-                    if row["_score"] > 0:
-                        matched.append(row)
-                    seen.add(row["condition_id"])
+        _fetch_page({"limit": 200, "order": "volume", "ascending": "false"})
+        matched = [r for r in all_rows if r["_score"] > 0]
 
-    # If nothing matched at all, return top active markets unfiltered
-    results = matched if matched else all_rows
+    # Return matched results; empty DataFrame if nothing found (caller handles messaging)
+    results = matched  # intentionally empty if no match — don't return irrelevant markets
 
     df = pd.DataFrame(results) if results else pd.DataFrame()
     if not df.empty:
-        if "_score" not in df.columns:
-            df["_score"] = 0
-        # Sort: best text match first, then active-first, then 24h volume
         df["_sort"] = df["_score"] * 1e14 + df["active"].astype(int) * 1e12 + df["volume_24hr"]
         df = (df.sort_values("_sort", ascending=False)
                 .drop(columns=["_score", "_sort"])

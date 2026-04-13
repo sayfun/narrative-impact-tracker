@@ -434,21 +434,28 @@ def render_sidebar():
 
         if markets_df is not None and not markets_df.empty:
             options = [
-                f"{row['question'][:60]}… (${row['volume']:,.0f})"
+                f"{row['question'][:62]}…  [{'ACTIVE' if row['active'] else 'closed'}, ${row['volume_24hr']:,.0f}/24h]"
+                if len(row['question']) > 62
+                else f"{row['question']}  [{'ACTIVE' if row['active'] else 'closed'}, ${row['volume_24hr']:,.0f}/24h]"
                 for _, row in markets_df.iterrows()
             ]
             chosen = st.sidebar.selectbox(
                 "Select market",
                 options=options,
                 index=0,
-                help="These are the top Polymarket results for your search, ranked by trading volume.",
+                help="Matched Polymarket markets, ranked by text relevance then 24h trading volume.",
             )
-            market_index   = options.index(chosen)
-            selected_row   = markets_df.iloc[market_index]
+            market_index    = options.index(chosen)
+            selected_row    = markets_df.iloc[market_index]
             market_question = selected_row["question"]
             token_ids       = selected_row["token_ids"]
-        else:
-            st.sidebar.warning("No markets found — try a different search term.")
+        elif markets_df is not None and markets_df.empty:
+            st.sidebar.error(
+                f"No Polymarket markets found matching **\"{search_query}\"**.\n\n"
+                "Try different keywords — e.g. `Iran attack`, `Fed rate cut`, "
+                "`Ukraine ceasefire`. Browse all active markets at "
+                "[polymarket.com](https://polymarket.com)."
+            )
 
     # ── Step 3: topic terms for GDELT ──
     st.sidebar.divider()
