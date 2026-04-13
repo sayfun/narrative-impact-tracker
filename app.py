@@ -433,12 +433,14 @@ def render_sidebar():
                     markets_df = None
 
         if markets_df is not None and not markets_df.empty:
-            options = [
-                f"{row['question'][:62]}…  [{'ACTIVE' if row['active'] else 'closed'}, ${row['volume_24hr']:,.0f}/24h]"
-                if len(row['question']) > 62
-                else f"{row['question']}  [{'ACTIVE' if row['active'] else 'closed'}, ${row['volume_24hr']:,.0f}/24h]"
-                for _, row in markets_df.iterrows()
-            ]
+            def _option_label(row):
+                vol  = row.get("volume_24hr", row.get("volume", 0)) or 0
+                tag  = "ACTIVE" if row.get("active") else "closed"
+                q    = row.get("question", "")
+                q_display = (q[:62] + "…") if len(q) > 62 else q
+                return f"{q_display}  [{tag}, ${vol:,.0f}/24h]"
+
+            options = [_option_label(row) for _, row in markets_df.iterrows()]
             chosen = st.sidebar.selectbox(
                 "Select market",
                 options=options,
