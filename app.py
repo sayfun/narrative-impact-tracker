@@ -758,7 +758,7 @@ def render_sidebar():
         "shock_threshold":  shock_threshold / 100,
         "fetch_articles":   fetch_articles,
         "market_index":     market_index,
-        "manual_token_id":  manual_token if (manual_token and manual_question) else "",
+        "manual_token_id":  manual_token if manual_token else "",
         "mc_api_key":       mc_api_key,
         "run":              run,
     }
