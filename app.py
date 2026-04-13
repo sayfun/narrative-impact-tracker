@@ -67,6 +67,7 @@ def run_pipeline_cached(
     end: str,
     shock_threshold: float,
     fetch_articles: bool,
+    market_index: int = 0,
 ):
     """
     Cached wrapper around NarrativePipeline.collect().
@@ -91,6 +92,7 @@ def run_pipeline_cached(
         end             = end,
         shock_threshold = shock_threshold,
         fetch_articles  = fetch_articles,
+        market_index    = market_index,
     )
     pipe.collect(verbose=False)
 
@@ -420,6 +422,11 @@ def render_sidebar():
     end_date   = col2.date_input("End",   value=date(2024, 11, 7))
 
     st.sidebar.subheader("Advanced")
+    market_index = st.sidebar.number_input(
+        "Market result index",
+        min_value=0, max_value=19, value=0,
+        help="0 = highest-volume match. Increase if the wrong market is being selected.",
+    )
     shock_threshold = st.sidebar.slider(
         "Shock threshold (pp)",
         min_value=3, max_value=20, value=8,
@@ -452,6 +459,7 @@ def render_sidebar():
         "end":              end_date.isoformat(),
         "shock_threshold":  shock_threshold / 100,
         "fetch_articles":   fetch_articles,
+        "market_index":     int(market_index),
         "run":              run,
     }
 
@@ -478,6 +486,7 @@ def render_results(result: dict, inputs: dict):
     )
 
     # ── summary KPIs ──
+    import math
     prob_min  = aligned["probability"].min()
     prob_max  = aligned["probability"].max()
     prob_mean = aligned["probability"].mean()
@@ -485,9 +494,21 @@ def render_results(result: dict, inputs: dict):
     peak_lag  = xcorr.get("peak_lag", "–")
     peak_corr = xcorr.get("peak_corr", None)
 
+    def fmt_pct(v):
+        return f"{v:.1%}" if (v is not None and not (isinstance(v, float) and math.isnan(v))) else "no data"
+
+    # Warn if no probability data was returned for this window
+    if aligned["probability"].isna().all():
+        st.warning(
+            "⚠️ **No probability data found for this date window.** "
+            "This usually means the matched Polymarket market closed before your start date. "
+            "Check the market name below and try an earlier date range, or refine your search query.",
+            icon="⚠️",
+        )
+
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Probability range", f"{prob_min:.0%} – {prob_max:.0%}")
-    k2.metric("Mean probability",  f"{prob_mean:.1%}")
+    k1.metric("Probability range", f"{fmt_pct(prob_min)} – {fmt_pct(prob_max)}")
+    k2.metric("Mean probability",  fmt_pct(prob_mean))
     k3.metric("Sharp movements",   n_shocks,   help="Probability events ≥ shock threshold")
     k4.metric("Peak X-corr lag",
               f"{peak_lag}d" if isinstance(peak_lag, int) else "–",
@@ -678,7 +699,19 @@ def render_results(result: dict, inputs: dict):
 def main():
     inputs = render_sidebar()
 
-    # Check if there's a cached result to display on load (same params as session state)
+    # Check if inputs changed since last run — if so, clear stale results
+    last = st.session_state.get("last_inputs", {})
+    inputs_changed = (
+        inputs["market_query"]   != last.get("market_query") or
+        inputs["topic_terms"]    != last.get("topic_terms") or
+        inputs["start"]          != last.get("start") or
+        inputs["end"]            != last.get("end")
+    )
+    if inputs_changed:
+        st.session_state.pop("last_result", None)
+        st.session_state.pop("last_inputs", None)
+
+    # Show cached result if available and user hasn't clicked Run
     if "last_result" in st.session_state and not inputs["run"]:
         render_results(st.session_state["last_result"], st.session_state["last_inputs"])
         return
@@ -736,6 +769,7 @@ Results include:
                 end                 = inputs["end"],
                 shock_threshold     = inputs["shock_threshold"],
                 fetch_articles      = inputs["fetch_articles"],
+                market_index        = inputs["market_index"],
             )
         except RuntimeError as e:
             status.update(label="Failed", state="error")
@@ -761,6 +795,7 @@ Results include:
                 st.error(f"**Unexpected error:** {e}")
             return
 
+        st.write(f"✓ Matched market: **{result['market_question']}**")
         st.write("Building aligned dataset…")
         st.write("Running statistical analysis…")
         st.write("Rendering charts…")
