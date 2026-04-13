@@ -770,45 +770,104 @@ def main():
         return
 
     if not inputs["run"]:
-        # Landing state
+        # Landing / About page
         st.title("Narrative Impact Tracker")
-        st.markdown("""
-**Empirically measure the influence of prediction market probability movements on media narratives.**
+        st.caption("Empirically measure the influence of prediction market probability movements on media narratives.")
 
-This tool implements the FRAME framework (ERS, PCF, NCS metrics) and tests whether
-Polymarket probability shifts Granger-cause changes in media coverage framing.
+        tab1, tab2 = st.tabs(["How to use", "About & methodology"])
 
----
+        with tab1:
+            st.markdown("""
+### Quick start
 
-### How to use
+1. **Search** for a topic in the sidebar — e.g. `Iran attack`, `Fed rate cut`, `Ukraine ceasefire`
+2. **Select** the matching market from the dropdown (shows real market names + live volume)
+3. **Set topic terms** for the media coverage search — 2–4 keywords work best
+4. **Set a date range** — use the period when the market was actively trading
+5. Click **Run analysis**
 
-1. **Set a market query** — e.g. `"presidential election winner 2024"` or `"UK general election"`
-2. **Add topic terms** — comma-separated keywords for the GDELT coverage query
-3. **Set a date range** — the analysis window
-4. Click **Run analysis**
+### What you get
 
-Results include:
-- Interactive probability + coverage timeline
-- ERS / PCF / NCS narrative feature time series
-- Cross-correlation analysis (does probability *lead* coverage?)
-- Granger causality tests (5-lag, ADF-corrected, bidirectional)
-- Event study around sharp probability movements
+| Output | What it shows |
+|--------|--------------|
+| Probability & coverage timeline | Polymarket WIN probability vs. GDELT media intensity, with shock events marked |
+| Narrative feature time series | ERS, PCF, NCS extracted from article headlines over time |
+| Cross-correlation | At which lag does probability *lead* coverage? |
+| Granger causality tests | Does probability movement predict narrative shifts? (5-lag, ADF-corrected, bidirectional) |
+| Event study | Pre/post narrative change around sharp probability movements |
+| Downloads | aligned_frame.csv · narrative_features_daily.csv · self-contained HTML report |
 
----
+### Best markets to analyse
+
+| Search query | Notes |
+|---|---|
+| `presidential election winner 2024` | Richest historical dataset — July–November 2024 |
+| `Iran attack military` | Active right now (April 2026) |
+| `Ukraine ceasefire peace` | Long-running, high media coverage |
+| `Fed rate cut 2025` | Strong macroeconomic coverage |
+
+### Tips
+- **Uncheck "Fetch article tone data"** for a fast first pass — cuts run time from ~3 min to ~10 sec
+- If you get a GDELT rate limit error, wait 60 seconds and try again, or shorten the date range
+- The date range should cover the period when the market was *actively trading*, not after it resolved
+""")
+
+        with tab2:
+            st.markdown("""
+### What this tool measures
+
+Prediction markets like Polymarket don't just aggregate information — they construct and circulate stories about possible futures. This tool asks: **do probability movements cause measurable changes in how media frames a story?**
+
+It implements a three-mode enrollment framework connecting financial, discursive, and epistemic dimensions of prediction market influence on narrative.
+
+### Narrative variables
+
+| Variable | Full name | What it measures |
+|----------|-----------|-----------------|
+| **ERS** | Epistemic Register Score | Ratio of high-certainty language ("will win", "inevitable") to hedging language ("might", "could"). Positive = certain framing; negative = hedged. |
+| **PCF** | Probability Citation Frequency | Density of explicit probability language and prediction market citations per 1,000 words. Direct measure of market-to-media uptake. |
+| **NCS** | Narrative Closure Score | Density of possibility-foreclosing language ("no path to victory", "effectively over", "mathematically eliminated"). Measures prediction markets as story-ending machines. |
+| **PII** | Personalisation Intensity (proxy) | Fraction of sentences containing named persons. Captures secondary narrativisation — when structural probability becomes character-driven story. |
+
+*ERS, PCF, and NCS are currently extracted from article headlines only (GDELT's free API does not provide full article text). Absolute values are suppressed relative to full-text analysis; time-series patterns are preserved. Validate against a human-coded sample before using as primary outcomes in publication.*
+
+### Statistical methods
+
+**Granger causality** — tests whether lagged probability movements predict narrative variable shifts above and beyond the series' own lags. Applied to first-differenced series after ADF stationarity testing. Both directions tested (probability → narrative and narrative → probability).
+
+**Event study** — identifies sharp probability movements (≥8pp over 2 days by default) and measures pre/post changes in narrative variables within a ±5-day window.
+
+**Cross-correlation** — peak lag at which probability-coverage co-movement is strongest.
+
+> ⚠️ **Granger causality ≠ structural causation.** Both series may respond to a common event with different lag structures. For publication, manually classify each shock event as "clean" (no major scheduled event within ±72 hours) or "confounded" and report results separately.
 
 ### Data sources
 
 | Source | What it provides | Cost |
 |--------|-----------------|------|
-| Polymarket CLOB API | Daily YES/NO probabilities | Free |
-| GDELT v2 Doc API | Coverage volume + article tone | Free |
+| [Polymarket CLOB API](https://clob.polymarket.com) | Daily YES/NO probabilities | Free, public |
+| [GDELT v2 Doc API](https://api.gdeltproject.org) | Coverage volume, article tone, headline text | Free, public |
 
+### Known limitations
+
+- GDELT skews toward English-language wire services; under-represents Substack, financial media, non-English press
+- Polymarket market search covers ~400 most-active markets; niche topics may not appear
+- Polymarket coverage is strongest for US politics, geopolitics, macro, and crypto
+- Granger tests require ≥20 observations after differencing; short windows may produce no results
+
+### Citation
+
+If you use this tool in published research:
+
+```
+Funk, S. H. (2025). Narrative Impact Tracker [Software].
+https://github.com/sayfun/narrative-impact-tracker
+```
+
+### Source code
+
+[github.com/sayfun/narrative-impact-tracker](https://github.com/sayfun/narrative-impact-tracker) — MIT licence
 """)
-        st.info(
-            "**Tip:** Run `narrative-tracker markets --query 'your topic'` in terminal "
-            "to browse available Polymarket markets before searching here.",
-            icon="💡",
-        )
         return
 
     # Run pipeline
