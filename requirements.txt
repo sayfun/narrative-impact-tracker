@@ -1,11 +1,9 @@
-# Streamlit Cloud reads this file for deployment.
-# Pin to the versions known to work together on Python 3.11.
 requests>=2.31.0
 pandas>=2.0.0
 numpy>=1.26.0
-spacy>=3.7.0
+spacy>=3.7.0,<3.9.0
 statsmodels>=0.14.0
 matplotlib>=3.8.0
 streamlit>=1.35.0
 plotly>=5.22.0
-# spaCy model is downloaded via packages.txt (see below)
+https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

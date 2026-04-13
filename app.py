@@ -23,11 +23,6 @@ from plotly.subplots import make_subplots
 from datetime import date, timedelta
 import io
 
-# ── spaCy model (download once on first deploy) ───────────────────────────────
-# Must happen before any narrative_tracker import that loads spaCy.
-from narrative_tracker.model_setup import ensure_spacy_model
-ensure_spacy_model()
-
 # ── page config (must be first Streamlit call) ────────────────────────────────
 
 st.set_page_config(
