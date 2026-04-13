@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "narrative-impact-tracker"
+version = "0.1.0"
+description = "Empirically measure prediction market influence on media narratives"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["prediction markets", "media narratives", "computational journalism", "NLP", "GDELT", "Polymarket"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "requests>=2.31.0",
+    "pandas>=2.0.0",
+    "spacy>=3.7.0",
+    "statsmodels>=0.14.0",
+    "matplotlib>=3.8.0",
+    "numpy>=1.26.0",
+    "streamlit>=1.35.0",
+    "plotly>=5.22.0",
+]
+
+[project.scripts]
+narrative-tracker = "narrative_tracker.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["narrative_tracker*"]

@@ -1,0 +1,2 @@
+# Streamlit Cloud installs these apt packages before pip.
+# Not strictly required for this app but good practice.
