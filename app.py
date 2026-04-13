@@ -747,7 +747,18 @@ Results include:
             return
         except Exception as e:
             status.update(label="Failed", state="error")
-            st.error(f"**Unexpected error:** {e}")
+            msg = str(e)
+            if "429" in msg or "Too Many Requests" in msg:
+                st.warning(
+                    "**GDELT rate limit hit (429).** GDELT's free API allows ~1 request/second. "
+                    "The tool now retries automatically with backoff — but very long date ranges "
+                    "or many topic terms can still exceed it. Try:\n"
+                    "- Shortening the date range\n"
+                    "- Unticking 'Fetch article tone data' (much fewer requests)\n"
+                    "- Waiting 60 seconds and running again"
+                )
+            else:
+                st.error(f"**Unexpected error:** {e}")
             return
 
         st.write("Building aligned dataset…")

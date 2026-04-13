@@ -27,7 +27,30 @@ from typing import Optional
 
 GDELT_DOC_API  = "https://api.gdeltproject.org/api/v2/doc/doc"
 REQUEST_TIMEOUT = 30
-RATE_LIMIT_DELAY = 1.1       # seconds between requests (stay within GDELT limits)
+RATE_LIMIT_DELAY = 1.5       # seconds between requests (stay within GDELT limits)
+MAX_RETRIES     = 4          # retries on 429 / 5xx
+
+
+# ── retry-aware GET ───────────────────────────────────────────────────────────
+
+def _gdelt_get(params: dict) -> requests.Response:
+    """
+    GET the GDELT Doc API with exponential backoff on 429 / 5xx.
+    Raises requests.HTTPError on persistent failure.
+    """
+    delay = 2.0
+    for attempt in range(MAX_RETRIES):
+        resp = requests.get(GDELT_DOC_API, params=params, timeout=REQUEST_TIMEOUT)
+        if resp.status_code == 200:
+            return resp
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(delay)
+                delay *= 2   # exponential backoff: 2s → 4s → 8s → 16s
+                continue
+        resp.raise_for_status()
+    resp.raise_for_status()
+    return resp  # unreachable but satisfies type checkers
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -89,8 +112,7 @@ def fetch_coverage_timeline(
         "enddatetime":   _gdelt_datetime(end),
     }
 
-    resp = requests.get(GDELT_DOC_API, params=params, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    resp = _gdelt_get(params)
 
     # GDELT occasionally returns an empty body on valid requests
     if not resp.text.strip():
@@ -161,8 +183,7 @@ def fetch_articles(
         "sort":          "DateDesc",
     }
 
-    resp = requests.get(GDELT_DOC_API, params=params, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    resp = _gdelt_get(params)
 
     if not resp.text.strip():
         return pd.DataFrame()
