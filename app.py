@@ -578,19 +578,19 @@ def render_sidebar():
             "suggested_start": "2024-07-15",
             "suggested_end":   "2024-11-07",
         },
-        "🇺🇦 Ukraine ceasefire by end of 2025?": {
+        "🇺🇦 Ukraine ceasefire 2025–2026": {
             "token_id": "76885168648776633882454084559225614067599803855804481698042219701097697688",
-            "question": "Ukraine ceasefire by end of 2025?",
+            "question": "Ukraine ceasefire 2025–2026",
             "suggested_terms": "Ukraine, ceasefire, peace, war, Russia",
             "suggested_start": "2025-01-01",
-            "suggested_end":   "2025-06-30",
+            "suggested_end":   "2026-04-01",
         },
-        "🇮🇷 US military strike on Iran in 2025?": {
+        "🇮🇷 US attack on Iran 2026": {
             "token_id": "55527562813268502763749084855188242669753310943082818604279838396371048583",
-            "question": "US military strike on Iran in 2025?",
+            "question": "US attack on Iran 2026",
             "suggested_terms": "Iran, attack, military, strike, nuclear",
-            "suggested_start": "2025-01-01",
-            "suggested_end":   "2025-06-30",
+            "suggested_start": "2025-10-01",
+            "suggested_end":   "2026-04-13",
         },
     }
 
