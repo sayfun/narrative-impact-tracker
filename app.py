@@ -561,23 +561,73 @@ def render_sidebar():
     )
     st.sidebar.divider()
 
+    # ── Curated historical markets (archived from API) ────────────────────────
+    HISTORICAL_MARKETS = {
+        "— pick a featured market —": None,
+        "🇺🇸 Presidential Election Winner 2024 (Trump vs Harris)": {
+            "token_id": "21742633143463906290569050155826389240456629048843189025793797045763932443804",
+            "question": "Presidential Election Winner 2024",
+            "suggested_terms": "Trump, Harris, election, president",
+            "suggested_start": "2024-07-15",
+            "suggested_end":   "2024-11-07",
+        },
+        "🇺🇸 Will Trump win the 2024 presidential election?": {
+            "token_id": "69236923620077691027083946871148767382819025171534185409556716274216206771",
+            "question": "Will Trump win the 2024 presidential election?",
+            "suggested_terms": "Trump, election, Republican, MAGA",
+            "suggested_start": "2024-07-15",
+            "suggested_end":   "2024-11-07",
+        },
+        "🇺🇦 Ukraine ceasefire by end of 2025?": {
+            "token_id": "76885168648776633882454084559225614067599803855804481698042219701097697688",
+            "question": "Ukraine ceasefire by end of 2025?",
+            "suggested_terms": "Ukraine, ceasefire, peace, war, Russia",
+            "suggested_start": "2025-01-01",
+            "suggested_end":   "2025-06-30",
+        },
+        "🇮🇷 US military strike on Iran in 2025?": {
+            "token_id": "55527562813268502763749084855188242669753310943082818604279838396371048583",
+            "question": "US military strike on Iran in 2025?",
+            "suggested_terms": "Iran, attack, military, strike, nuclear",
+            "suggested_start": "2025-01-01",
+            "suggested_end":   "2025-06-30",
+        },
+    }
+
     # ── Step 1: search query ──
     st.sidebar.subheader("1 — Find a market")
+
+    # Featured historical markets shortcut
+    featured = st.sidebar.selectbox(
+        "Featured historical markets",
+        options=list(HISTORICAL_MARKETS.keys()),
+        index=0,
+        help="Pre-loaded markets that are no longer searchable via the Polymarket API.",
+    )
+    featured_data = HISTORICAL_MARKETS[featured]
+
     search_query = st.sidebar.text_input(
-        "Search Polymarket",
-        value="presidential election winner 2024",
+        "Or search Polymarket",
+        value="" if featured_data else "presidential election winner 2024",
         help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'",
+        disabled=bool(featured_data),
     )
     _fc1, _fc2 = st.sidebar.columns(2)
-    include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets")
-    include_closed = _fc2.checkbox("Closed", value=False, help="Include resolved/closed markets (for historical analysis)")
+    include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets", disabled=bool(featured_data))
+    include_closed = _fc2.checkbox("Closed", value=False, help="Include resolved/closed markets", disabled=bool(featured_data))
 
-    # ── Step 2: pick from real market names ──
-    market_index = 0
+    # ── Step 2: pick market ──
+    market_index    = 0
     market_question = ""
-    token_ids = []
+    token_ids       = []
+    manual_token    = ""
 
-    if search_query:
+    if featured_data:
+        # Featured historical market selected — use its token directly
+        market_question = featured_data["question"]
+        manual_token    = featured_data["token_id"]
+        st.sidebar.success(f"✓ {market_question}")
+    elif search_query:
         with st.sidebar:
             with st.spinner("Searching markets…"):
                 try:
@@ -586,11 +636,6 @@ def render_sidebar():
                     markets_df = None
 
         if markets_df is not None and not markets_df.empty:
-            # Debug expander — shows raw results before filtering so we can diagnose API issues
-            with st.sidebar.expander(f"🔍 Debug: {len(markets_df)} results"):
-                for _, r in markets_df.iterrows():
-                    st.caption(f"active={r.get('active')} closed={r.get('closed')} vol={r.get('volume',0):,.0f} | {r.get('question','')[:60]}")
-
             def _option_label(row):
                 vol  = row.get("volume_24hr", row.get("volume", 0)) or 0
                 tag  = "ACTIVE" if row.get("active") else "closed"
@@ -611,9 +656,8 @@ def render_sidebar():
             token_ids       = selected_row["token_ids"]
         elif markets_df is not None and markets_df.empty:
             st.sidebar.warning(
-                f"No markets found for **\"{search_query}\"** via API search.\n\n"
-                "Older resolved markets (e.g. 2024 US election) are not always "
-                "accessible through Polymarket's listing API. Use **manual token ID** below."
+                f"No markets found for **\"{search_query}\"**. "
+                "Try different keywords or use the featured markets above."
             )
 
     # ── Manual token ID fallback (for archived/historical markets) ──
@@ -643,9 +687,10 @@ def render_sidebar():
     # ── Step 3: topic terms for GDELT ──
     st.sidebar.divider()
     st.sidebar.subheader("2 — Coverage query")
+    default_terms = featured_data["suggested_terms"] if featured_data else "Trump, Harris, election, president"
     topics_raw = st.sidebar.text_input(
         "Topic terms (comma-separated)",
-        value="Trump, Harris, election, president",
+        value=default_terms,
         help="Keywords for the GDELT media coverage search. 2–4 terms work best.",
     )
     topic_terms = [t.strip() for t in topics_raw.split(",") if t.strip()]
@@ -654,8 +699,10 @@ def render_sidebar():
     st.sidebar.divider()
     st.sidebar.subheader("3 — Date range")
     col1, col2 = st.sidebar.columns(2)
-    start_date = col1.date_input("Start", value=date(2024, 7, 15))
-    end_date   = col2.date_input("End",   value=date(2024, 11, 7))
+    _default_start = date.fromisoformat(featured_data["suggested_start"]) if featured_data else date(2024, 7, 15)
+    _default_end   = date.fromisoformat(featured_data["suggested_end"])   if featured_data else date(2024, 11, 7)
+    start_date = col1.date_input("Start", value=_default_start)
+    end_date   = col2.date_input("End",   value=_default_end)
 
     # ── Advanced ──
     st.sidebar.divider()
