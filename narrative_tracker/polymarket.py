@@ -114,7 +114,11 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
     _fetch_page({"limit": 200, "active": "false",
                  "order": "volume", "ascending": "false", "offset": 200})
 
-    matched = [r for r in all_rows if r["_score"] > 0]
+    # Require at least 2 matching words to filter out single-word noise
+    # (e.g. "winner" alone matching every esports market when searching
+    # "presidential election winner 2024")
+    min_score = 2 if len(query_words) >= 3 else 1
+    matched = [r for r in all_rows if r["_score"] >= min_score]
 
     if not matched:
         return pd.DataFrame()
