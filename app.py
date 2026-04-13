@@ -536,7 +536,7 @@ def build_html_report(result: dict, gdelt_query: str, start: str, end: str) -> b
 @st.cache_data(show_spinner=False, ttl=300)
 def search_markets_cached(query: str):
     from narrative_tracker.polymarket import search_markets
-    df = search_markets(query, limit=8)
+    df = search_markets(query, limit=15)
     valid = df[df["token_ids"].apply(lambda x: len(x) > 0)].reset_index(drop=True)
     return valid
 
