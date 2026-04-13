@@ -568,7 +568,7 @@ def render_results(result: dict, inputs: dict):
             return "color: #aaa"
 
         st.dataframe(
-            summary_df.style.applymap(style_sig, subset=["forward_sig"]),
+            summary_df.style.map(style_sig, subset=["forward_sig"]),
             use_container_width=True,
             hide_index=True,
         )
