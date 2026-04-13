@@ -388,6 +388,16 @@ def build_html_report(result: dict, gdelt_query: str, start: str, end: str) -> b
     return html.encode("utf-8")
 
 
+# ── market search helper (cached separately so it's fast) ────────────────────
+
+@st.cache_data(show_spinner=False, ttl=300)
+def search_markets_cached(query: str):
+    from narrative_tracker.polymarket import search_markets
+    df = search_markets(query, limit=8)
+    valid = df[df["token_ids"].apply(lambda x: len(x) > 0)].reset_index(drop=True)
+    return valid
+
+
 # ── sidebar (inputs) ──────────────────────────────────────────────────────────
 
 def render_sidebar():
@@ -401,48 +411,81 @@ def render_sidebar():
     )
     st.sidebar.divider()
 
-    st.sidebar.subheader("Market")
-    market_query = st.sidebar.text_input(
-        "Polymarket search query",
+    # ── Step 1: search query ──
+    st.sidebar.subheader("1 — Find a market")
+    search_query = st.sidebar.text_input(
+        "Search Polymarket",
         value="presidential election winner 2024",
-        help="Searches Polymarket by volume. Use `narrative-tracker markets --query '…'` to browse options.",
+        help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'",
     )
 
-    st.sidebar.subheader("Topic")
+    # ── Step 2: pick from real market names ──
+    market_index = 0
+    market_question = ""
+    token_ids = []
+
+    if search_query:
+        with st.sidebar:
+            with st.spinner("Searching markets…"):
+                try:
+                    markets_df = search_markets_cached(search_query)
+                except Exception:
+                    markets_df = None
+
+        if markets_df is not None and not markets_df.empty:
+            options = [
+                f"{row['question'][:60]}… (${row['volume']:,.0f})"
+                for _, row in markets_df.iterrows()
+            ]
+            chosen = st.sidebar.selectbox(
+                "Select market",
+                options=options,
+                index=0,
+                help="These are the top Polymarket results for your search, ranked by trading volume.",
+            )
+            market_index   = options.index(chosen)
+            selected_row   = markets_df.iloc[market_index]
+            market_question = selected_row["question"]
+            token_ids       = selected_row["token_ids"]
+        else:
+            st.sidebar.warning("No markets found — try a different search term.")
+
+    # ── Step 3: topic terms for GDELT ──
+    st.sidebar.divider()
+    st.sidebar.subheader("2 — Coverage query")
     topics_raw = st.sidebar.text_input(
         "Topic terms (comma-separated)",
         value="Trump, Harris, election, president",
-        help="Used to build the GDELT coverage query. Max 4 terms are used.",
+        help="Keywords for the GDELT media coverage search. 2–4 terms work best.",
     )
     topic_terms = [t.strip() for t in topics_raw.split(",") if t.strip()]
 
-    st.sidebar.subheader("Date range")
+    # ── Step 4: date range ──
+    st.sidebar.divider()
+    st.sidebar.subheader("3 — Date range")
     col1, col2 = st.sidebar.columns(2)
     start_date = col1.date_input("Start", value=date(2024, 7, 15))
     end_date   = col2.date_input("End",   value=date(2024, 11, 7))
 
-    st.sidebar.subheader("Advanced")
-    market_index = st.sidebar.number_input(
-        "Market result index",
-        min_value=0, max_value=19, value=0,
-        help="0 = highest-volume match. Increase if the wrong market is being selected.",
-    )
-    shock_threshold = st.sidebar.slider(
-        "Shock threshold (pp)",
-        min_value=3, max_value=20, value=8,
-        help="Minimum probability movement (percentage points over 2 days) to flag as a shock event.",
-    )
-    fetch_articles = st.sidebar.checkbox(
-        "Fetch article tone data",
-        value=True,
-        help="Fetches GDELT article metadata for tone + narrative features. Slower (adds ~1-2 min).",
-    )
+    # ── Advanced ──
+    st.sidebar.divider()
+    with st.sidebar.expander("Advanced settings"):
+        shock_threshold = st.slider(
+            "Shock threshold (pp)",
+            min_value=3, max_value=20, value=8,
+            help="Minimum probability movement (percentage points over 2 days) to flag as a shock event.",
+        )
+        fetch_articles = st.checkbox(
+            "Fetch article tone data",
+            value=False,
+            help="Fetches GDELT article metadata for tone + narrative features. Slower (~2 min for long windows).",
+        )
 
     run = st.sidebar.button(
         "Run analysis",
         type="primary",
         use_container_width=True,
-        disabled=(not market_query or not topic_terms),
+        disabled=(not market_question or not topic_terms),
     )
 
     st.sidebar.divider()
@@ -453,13 +496,14 @@ def render_sidebar():
     )
 
     return {
-        "market_query":     market_query,
+        "market_query":     search_query,
+        "market_question":  market_question,
         "topic_terms":      topic_terms,
         "start":            start_date.isoformat(),
         "end":              end_date.isoformat(),
         "shock_threshold":  shock_threshold / 100,
         "fetch_articles":   fetch_articles,
-        "market_index":     int(market_index),
+        "market_index":     market_index,
         "run":              run,
     }
 
