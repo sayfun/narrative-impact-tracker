@@ -533,10 +533,13 @@ def build_html_report(result: dict, gdelt_query: str, start: str, end: str) -> b
 
 # ── market search helper (cached separately so it's fast) ────────────────────
 
-@st.cache_data(show_spinner=False, ttl=300)
-def search_markets_cached(query: str, include_active: bool = True, include_closed: bool = True):
+@st.cache_data(show_spinner=False, ttl=300, max_entries=50)
+def search_markets_cached(query: str, include_active: bool = True, include_closed: bool = True, _v: int = 3):
+    # _v is a version bump — increment to bust the cache after scoring fixes
     from narrative_tracker.polymarket import search_markets
     df = search_markets(query, limit=15, include_active=include_active, include_closed=include_closed)
+    if df.empty:
+        return df
     valid = df[df["token_ids"].apply(lambda x: len(x) > 0)].reset_index(drop=True)
     return valid
 
@@ -574,7 +577,7 @@ def render_sidebar():
         with st.sidebar:
             with st.spinner("Searching markets…"):
                 try:
-                    markets_df = search_markets_cached(search_query, include_active=include_active, include_closed=include_closed)
+                    markets_df = search_markets_cached(search_query, include_active=include_active, include_closed=include_closed, _v=3)
                 except Exception:
                     markets_df = None
 
