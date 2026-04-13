@@ -582,6 +582,11 @@ def render_sidebar():
                     markets_df = None
 
         if markets_df is not None and not markets_df.empty:
+            # Debug expander — shows raw results before filtering so we can diagnose API issues
+            with st.sidebar.expander(f"🔍 Debug: {len(markets_df)} results"):
+                for _, r in markets_df.iterrows():
+                    st.caption(f"active={r.get('active')} closed={r.get('closed')} vol={r.get('volume',0):,.0f} | {r.get('question','')[:60]}")
+
             def _option_label(row):
                 vol  = row.get("volume_24hr", row.get("volume", 0)) or 0
                 tag  = "ACTIVE" if row.get("active") else "closed"
