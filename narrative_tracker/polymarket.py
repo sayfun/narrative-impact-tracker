@@ -13,6 +13,7 @@ Key design decisions:
   - Market discovery returns a DataFrame so it can be inspected interactively.
 """
 
+import re
 import json
 import time
 import requests
