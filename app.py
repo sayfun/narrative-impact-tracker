@@ -633,20 +633,21 @@ def render_sidebar():
             help="Fetches GDELT article metadata for tone + narrative features. Slower (~2 min for long windows).",
         )
         st.divider()
-        mc_api_key = st.text_input(
-            "MediaCloud API key (optional)",
-            value="",
-            type="password",
-            help=(
-                "If provided, fetches full article text from MediaCloud instead of "
-                "GDELT headlines — enabling proper full-text ERS/PCF/NCS extraction. "
-                "Free academic key at mediacloud.org/register"
-            ),
-        )
-        if mc_api_key:
-            st.caption(
-                "✓ MediaCloud key set. Full-text feature extraction will run "
-                "alongside the headline analysis when 'Fetch article tone data' is checked."
+        # Use key from Streamlit secrets if available (set in the Streamlit Cloud
+        # dashboard under Settings → Secrets as: MEDIACLOUD_API_KEY = "your-key")
+        _server_mc_key = st.secrets.get("MEDIACLOUD_API_KEY", "") if hasattr(st, "secrets") else ""
+        if _server_mc_key:
+            st.caption("✓ MediaCloud full-text enabled")
+            mc_api_key = _server_mc_key
+        else:
+            mc_api_key = st.text_input(
+                "MediaCloud API key (optional)",
+                value="",
+                type="password",
+                help=(
+                    "Enables full-text article extraction for better ERS/PCF/NCS accuracy. "
+                    "Free academic key at search.mediacloud.org/register"
+                ),
             )
 
     run = st.sidebar.button(
