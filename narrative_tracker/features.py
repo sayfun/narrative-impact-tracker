@@ -256,6 +256,62 @@ def aggregate_daily_features(enriched_articles_df: pd.DataFrame) -> pd.DataFrame
     return agg.sort_values("date").reset_index(drop=True)
 
 
+# ── Epistemic Authority Index ─────────────────────────────────────────────────
+
+def compute_eai(features_daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute the Epistemic Authority Index (EAI) from daily narrative features.
+
+    EAI captures how strongly coverage positions prediction market probabilities
+    as the authoritative anchor for the narrative — combining certainty framing
+    (ERS), direct market citation (PCF), and narrative closure language (NCS).
+
+    Formula
+    -------
+        EAI = 0.40 × PCF_norm + 0.35 × ERS_norm + 0.25 × NCS_norm
+
+    Where:
+        PCF_norm  = pcf_adoption_rate (% of articles citing probability; 0–1)
+        ERS_norm  = (mean_ers + 1) / 2  (maps –1..+1 → 0..1)
+        NCS_norm  = tanh(mean_ncs × 8)  (soft ceiling: maps 0..∞ → 0..1)
+
+    Weights reflect theoretical priority: PCF is the most direct measure of
+    market citation as authority (financial + discursive enrollment); ERS
+    captures epistemic register shift; NCS captures narrative foreclosure.
+
+    When computed from headlines only (GDELT fast path), EAI underestimates
+    absolute values but preserves relative patterns across time. Declare this
+    limitation when reporting; validate against full-text EAI where possible.
+
+    Returns the input DataFrame with added columns: `eai`, `eai_smooth`,
+    `eai_ers_contrib`, `eai_pcf_contrib`, `eai_ncs_contrib`.
+    """
+    df = features_daily.copy()
+
+    if "mean_ers" not in df.columns:
+        for col in ["eai", "eai_smooth", "eai_ers_contrib", "eai_pcf_contrib", "eai_ncs_contrib"]:
+            df[col] = np.nan
+        return df
+
+    ers_raw  = df["mean_ers"].fillna(0).clip(-1, 1)
+    pcf_raw  = df.get("pcf_adoption_rate", df.get("mean_pcf", pd.Series(0.0, index=df.index))).fillna(0).clip(0, 1)
+    ncs_raw  = df.get("mean_ncs", pd.Series(0.0, index=df.index)).fillna(0)
+
+    ers_norm = (ers_raw + 1) / 2          # –1..1  → 0..1
+    pcf_norm = pcf_raw                     # already 0..1
+    ncs_norm = np.tanh(ncs_raw * 8)       # 0..∞   → 0..1 (soft ceiling)
+
+    # Individual contributions (for the breakdown chart)
+    df["eai_ers_contrib"] = (0.35 * ers_norm).round(4)
+    df["eai_pcf_contrib"] = (0.40 * pcf_norm).round(4)
+    df["eai_ncs_contrib"] = (0.25 * ncs_norm).round(4)
+
+    df["eai"]        = (df["eai_ers_contrib"] + df["eai_pcf_contrib"] + df["eai_ncs_contrib"]).round(4)
+    df["eai_smooth"] = df["eai"].rolling(3, center=True, min_periods=1).mean().round(4)
+
+    return df
+
+
 # ── headline-only feature extraction (GDELT fast path) ───────────────────────
 
 def extract_headline_features_df(articles_df: pd.DataFrame) -> pd.DataFrame:

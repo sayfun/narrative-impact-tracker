@@ -68,6 +68,7 @@ def run_pipeline_cached(
     shock_threshold: float,
     fetch_articles: bool,
     market_index: int = 0,
+    mc_api_key: str = "",
 ):
     """
     Cached wrapper around NarrativePipeline.collect().
@@ -82,7 +83,9 @@ def run_pipeline_cached(
     from narrative_tracker.analysis import run_full_analysis
     from narrative_tracker.features import (
         extract_headline_features_df,
+        extract_features_batch,
         aggregate_daily_features,
+        compute_eai,
     )
 
     pipe = NarrativePipeline(
@@ -96,15 +99,48 @@ def run_pipeline_cached(
     )
     pipe.collect(verbose=False)
 
-    features_daily = None
+    features_daily   = None
+    fulltext_source  = None   # "gdelt_headlines" | "mediacloud_fulltext"
     aligned_for_analysis = pipe.aligned.copy()
 
-    if pipe.articles_df is not None and not pipe.articles_df.empty:
-        enriched = extract_headline_features_df(pipe.articles_df)
+    # ── Attempt MediaCloud full-text enrichment ──
+    mc_articles = None
+    if mc_api_key and mc_api_key.strip() and fetch_articles:
+        try:
+            from narrative_tracker.mediacloud_client import (
+                search_stories_windowed,
+                build_mediacloud_query,
+            )
+            mc_query = build_mediacloud_query(list(topic_terms_tuple))
+            mc_articles = search_stories_windowed(
+                mc_query, start=start, end=end,
+                api_key=mc_api_key.strip(),
+                window_days=14, max_per_window=200,
+                include_text=True, verbose=False,
+            )
+        except Exception:
+            mc_articles = None   # fall through to GDELT headlines
+
+    # ── Feature extraction (full-text if MediaCloud succeeded, else headlines) ──
+    articles_for_features = mc_articles if (mc_articles is not None and not mc_articles.empty) else pipe.articles_df
+
+    if articles_for_features is not None and not articles_for_features.empty:
+        if mc_articles is not None and not mc_articles.empty:
+            # Full-text path: use the text column for proper feature extraction
+            enriched = extract_features_batch(
+                articles_for_features,
+                text_col="text", title_col="title", verbose=False,
+            )
+            fulltext_source = "mediacloud_fulltext"
+        else:
+            enriched = extract_headline_features_df(articles_for_features)
+            fulltext_source = "gdelt_headlines"
+
         features_daily = aggregate_daily_features(enriched)
+        features_daily = compute_eai(features_daily)
 
         if features_daily is not None and not features_daily.empty:
-            feat_cols = [c for c in features_daily.columns if c != "date"]
+            feat_cols  = [c for c in features_daily.columns if c != "date"]
             feat_merge = features_daily[["date"] + feat_cols].copy()
             feat_merge["date"] = pd.to_datetime(feat_merge["date"], utc=True).dt.normalize()
             aligned_for_analysis["date"] = pd.to_datetime(
@@ -121,7 +157,9 @@ def run_pipeline_cached(
         "aligned":          aligned_for_analysis,
         "shocks":           pipe.shocks,
         "articles":         pipe.articles_df,
+        "mc_articles":      mc_articles,
         "features_daily":   features_daily,
+        "fulltext_source":  fulltext_source,
         "analysis":         analysis,
         "summary":          pipe.summary(),
     }
@@ -371,6 +409,111 @@ def fig_event_study(events_result: dict, aligned: pd.DataFrame):
     return fig
 
 
+def fig_eai(aligned: pd.DataFrame, features_daily: pd.DataFrame, shocks: pd.DataFrame):
+    """
+    Epistemic Authority Index vs. Probability — dual-panel.
+
+    Top: Probability (blue) and smoothed EAI (gold) on a shared 0–1 axis.
+         Convergence = EAI rising as probability hardens = market-to-narrative
+         influence in action. Divergence after shocks = lag structure.
+
+    Bottom: EAI component breakdown — ERS (green), PCF (amber), NCS (purple)
+            stacked contributions that sum to the total EAI.
+    """
+    if features_daily is None or features_daily.empty or "eai" not in features_daily.columns:
+        return None
+
+    # Merge EAI onto the aligned date index for consistent x-axis
+    feat = features_daily[["date", "eai_smooth", "eai_ers_contrib", "eai_pcf_contrib", "eai_ncs_contrib"]].copy()
+    feat["date"] = pd.to_datetime(feat["date"], utc=True).dt.normalize()
+    al = aligned.copy()
+    al["date"] = pd.to_datetime(al["date"], utc=True).dt.normalize()
+    merged = al[["date", "probability"]].merge(feat, on="date", how="left")
+
+    dates = pd.to_datetime(merged["date"])
+    prob  = merged["probability"]
+    eai   = merged["eai_smooth"].fillna(method=None)
+
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.60, 0.40],
+        vertical_spacing=0.06,
+        subplot_titles=(
+            "Probability vs. Epistemic Authority Index (EAI)",
+            "EAI component breakdown",
+        ),
+    )
+
+    # ── Panel 1: Probability ──
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=prob,
+            mode="lines", name="WIN probability",
+            line=dict(color=C["prob"], width=2.5),
+            hovertemplate="%{x|%b %d}: prob <b>%{y:.1%}</b><extra></extra>",
+        ),
+        row=1, col=1,
+    )
+
+    # ── Panel 1: EAI (same axis, 0–1) ──
+    fig.add_trace(
+        go.Scatter(
+            x=dates, y=eai,
+            mode="lines", name="EAI (smoothed)",
+            line=dict(color="#e6a817", width=2.5, dash="solid"),
+            fill="tozeroy",
+            fillcolor="rgba(230,168,23,0.10)",
+            hovertemplate="%{x|%b %d}: EAI <b>%{y:.3f}</b><extra></extra>",
+        ),
+        row=1, col=1,
+    )
+
+    # Shock markers on panel 1
+    for _, s in shocks.iterrows():
+        colour = C["shock_up"] if s["direction"] == "UP" else C["shock_dn"]
+        fig.add_vline(
+            x=pd.Timestamp(s["date"]).timestamp() * 1000,
+            line_color=colour, line_width=1.2, line_dash="dot",
+            row=1, col=1,
+        )
+
+    # ── Panel 2: EAI components (stacked area) ──
+    component_cols = [
+        ("eai_pcf_contrib", "PCF (market citation)", C["pcf"]),
+        ("eai_ers_contrib", "ERS (certainty register)", C["ers"]),
+        ("eai_ncs_contrib", "NCS (narrative closure)", C["ncs"]),
+    ]
+    for col, label, colour in component_cols:
+        if col in merged.columns:
+            vals = merged[col].fillna(0)
+            fig.add_trace(
+                go.Scatter(
+                    x=dates, y=vals,
+                    mode="lines", name=label,
+                    stackgroup="eai_components",
+                    line=dict(color=colour, width=1),
+                    fillcolor=colour.replace("#", "rgba(") if False else colour,
+                    hovertemplate=f"{label}: <b>%{{y:.3f}}</b><extra></extra>",
+                ),
+                row=2, col=1,
+            )
+
+    fig.update_yaxes(tickformat=".0%", range=[0, 1], row=1, col=1, title_text="0 – 1 scale")
+    fig.update_yaxes(row=2, col=1, title_text="EAI contribution")
+    fig.update_layout(
+        height=520,
+        hovermode="x unified",
+        legend=dict(orientation="h", y=1.04, x=0, font_size=11),
+        margin=dict(l=0, r=0, t=50, b=0),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#eeeeee")
+    fig.update_yaxes(showgrid=True, gridcolor="#eeeeee")
+    return fig
+
+
 # ── HTML report export (reuses CLI report generator) ─────────────────────────
 
 def build_html_report(result: dict, gdelt_query: str, start: str, end: str) -> bytes:
@@ -489,6 +632,22 @@ def render_sidebar():
             value=False,
             help="Fetches GDELT article metadata for tone + narrative features. Slower (~2 min for long windows).",
         )
+        st.divider()
+        mc_api_key = st.text_input(
+            "MediaCloud API key (optional)",
+            value="",
+            type="password",
+            help=(
+                "If provided, fetches full article text from MediaCloud instead of "
+                "GDELT headlines — enabling proper full-text ERS/PCF/NCS extraction. "
+                "Free academic key at mediacloud.org/register"
+            ),
+        )
+        if mc_api_key:
+            st.caption(
+                "✓ MediaCloud key set. Full-text feature extraction will run "
+                "alongside the headline analysis when 'Fetch article tone data' is checked."
+            )
 
     run = st.sidebar.button(
         "Run analysis",
@@ -513,6 +672,7 @@ def render_sidebar():
         "shock_threshold":  shock_threshold / 100,
         "fetch_articles":   fetch_articles,
         "market_index":     market_index,
+        "mc_api_key":       mc_api_key,
         "run":              run,
     }
 
@@ -590,13 +750,17 @@ def render_results(result: dict, inputs: dict):
 
     st.divider()
 
+    fulltext_source = result.get("fulltext_source")
+
     # ── Section 2: Narrative features ──
     if features is not None and not features.empty:
         st.subheader("2 — Narrative Feature Time Series")
-        st.caption(
-            "ERS, PCF, NCS extracted at headline level. Absolute values are suppressed "
-            "relative to full-text analysis; time-series shape is preserved."
+        source_note = (
+            "📄 **Full-text analysis via MediaCloud** — ERS, PCF, NCS extracted from full article text."
+            if fulltext_source == "mediacloud_fulltext"
+            else "Headline-level analysis (GDELT). Absolute values suppressed; time-series patterns preserved."
         )
+        st.caption(source_note)
         fig2 = fig_narrative_features(features)
         if fig2:
             st.plotly_chart(fig2, use_container_width=True)
@@ -611,6 +775,53 @@ def render_results(result: dict, inputs: dict):
 | **PII** | Personalisation Intensity Index | Fraction of sentences containing named persons (proxy for character-driven framing) |
 """)
         st.divider()
+
+    # ── Section 2b: EAI ──
+    if features is not None and not features.empty and "eai" in features.columns:
+        mc_count = len(result.get("mc_articles") or [])
+        st.subheader("2b — Epistemic Authority Index (EAI)")
+
+        eai_caption = (
+            f"EAI computed from **{mc_count} full-text MediaCloud articles**. "
+            "Convergence between EAI (gold) and probability (blue) = market framing adopted by media."
+            if fulltext_source == "mediacloud_fulltext"
+            else
+            "EAI computed from GDELT headlines. Provide a MediaCloud key for full-text EAI. "
+            "Convergence between EAI (gold) and probability (blue) = market framing adopted by media."
+        )
+        st.caption(eai_caption)
+
+        fig_e = fig_eai(aligned, features, shocks)
+        if fig_e:
+            st.plotly_chart(fig_e, use_container_width=True)
+
+        # Current EAI value
+        latest_eai = features["eai"].dropna().iloc[-1] if not features["eai"].dropna().empty else None
+        peak_eai   = features["eai"].max()
+        eai_c1, eai_c2 = st.columns(2)
+        if latest_eai is not None:
+            eai_c1.metric("Latest EAI", f"{latest_eai:.3f}", help="0 = purely hedged/agnostic framing; 1 = fully probability-anchored, declarative")
+        if peak_eai:
+            eai_c2.metric("Peak EAI", f"{peak_eai:.3f}")
+
+        with st.expander("How EAI is calculated"):
+            st.markdown("""
+**EAI = 0.40 × PCF + 0.35 × ERS + 0.25 × NCS**
+
+| Component | Weight | What it captures |
+|-----------|--------|-----------------|
+| PCF (Probability Citation Frequency) | 40% | Most direct measure: market numbers quoted as fact |
+| ERS (Epistemic Register Score) | 35% | Language shift from hedged ("might") to declarative ("will") |
+| NCS (Narrative Closure Score) | 25% | Possibility-foreclosing language as probability hardens |
+
+Each component is normalised to 0–1 before weighting. EAI = 0 means purely hedged, uncertain framing; EAI = 1 means fully probability-anchored, declarative coverage.
+
+*The convergence pattern — EAI rising toward the probability line after a sharp movement — is the visual test of market-to-narrative influence. Lag between the probability spike and EAI response is interpretable as the media uptake delay.*
+""")
+        st.divider()
+
+    elif features is None and inputs.get("mc_api_key"):
+        st.info("Enable 'Fetch article tone data' to compute the Epistemic Authority Index.", icon="ℹ️")
 
     # ── Section 3: Cross-correlation ──
     st.subheader("3 — Cross-Correlation Analysis")
@@ -828,8 +1039,9 @@ It implements a three-mode enrollment framework connecting financial, discursive
 | **PCF** | Probability Citation Frequency | Density of explicit probability language and prediction market citations per 1,000 words. Direct measure of market-to-media uptake. |
 | **NCS** | Narrative Closure Score | Density of possibility-foreclosing language ("no path to victory", "effectively over", "mathematically eliminated"). Measures prediction markets as story-ending machines. |
 | **PII** | Personalisation Intensity (proxy) | Fraction of sentences containing named persons. Captures secondary narrativisation — when structural probability becomes character-driven story. |
+| **EAI** | Epistemic Authority Index | Composite index (0–1) combining PCF, ERS, and NCS into a single measure of how strongly coverage positions market probability as narrative authority. EAI = 0.40×PCF + 0.35×ERS + 0.25×NCS. |
 
-*ERS, PCF, and NCS are currently extracted from article headlines only (GDELT's free API does not provide full article text). Absolute values are suppressed relative to full-text analysis; time-series patterns are preserved. Validate against a human-coded sample before using as primary outcomes in publication.*
+*ERS, PCF, NCS, and EAI are extracted from article headlines when using GDELT (free, no key required). Provide a [MediaCloud API key](https://search.mediacloud.org/register) for full-text extraction — this substantially improves metric sensitivity. Validate against a human-coded sample before using as primary outcomes in publication.*
 
 ### Statistical methods
 
@@ -847,6 +1059,7 @@ It implements a three-mode enrollment framework connecting financial, discursive
 |--------|-----------------|------|
 | [Polymarket CLOB API](https://clob.polymarket.com) | Daily YES/NO probabilities | Free, public |
 | [GDELT v2 Doc API](https://api.gdeltproject.org) | Coverage volume, article tone, headline text | Free, public |
+| [MediaCloud](https://search.mediacloud.org) | Full article text across thousands of outlets | Free (academic key) |
 
 ### Known limitations
 
@@ -882,6 +1095,7 @@ https://github.com/sayfun/narrative-impact-tracker
                 shock_threshold     = inputs["shock_threshold"],
                 fetch_articles      = inputs["fetch_articles"],
                 market_index        = inputs["market_index"],
+                mc_api_key          = inputs.get("mc_api_key", ""),
             )
         except RuntimeError as e:
             status.update(label="Failed", state="error")
