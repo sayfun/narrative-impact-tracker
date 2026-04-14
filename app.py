@@ -609,12 +609,12 @@ def render_sidebar():
     search_query = st.sidebar.text_input(
         "Or search Polymarket",
         value="" if featured_data else "presidential election winner 2024",
-        help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'",
+        help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'. Clear the featured market above to enable.",
         disabled=bool(featured_data),
     )
     _fc1, _fc2 = st.sidebar.columns(2)
-    include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets", disabled=bool(featured_data))
-    include_closed = _fc2.checkbox("Closed", value=False, help="Include resolved/closed markets", disabled=bool(featured_data))
+    include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets")
+    include_closed = _fc2.checkbox("Closed", value=False, help="Include resolved/closed markets")
 
     # ── Step 2: pick market ──
     market_index    = 0
