@@ -54,9 +54,24 @@ def adf_test(series: pd.Series, name: str = "series") -> dict:
     if len(clean) < 10:
         return {"name": name, "error": "insufficient observations", "is_stationary": None}
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        result = adfuller(clean, autolag="AIC")
+    # Constant series (zero variance) → ADF test is undefined; treat as non-stationary
+    if clean.std() == 0:
+        return {
+            "name": name, "error": "constant series (zero variance)",
+            "is_stationary": None,
+            "interpretation": f"{name}: constant series — ADF test not applicable",
+        }
+
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = adfuller(clean, autolag="AIC")
+    except Exception as e:
+        return {
+            "name": name, "error": str(e),
+            "is_stationary": None,
+            "interpretation": f"{name}: ADF test failed ({e})",
+        }
 
     is_stationary = result[1] < 0.05
     return {
@@ -344,7 +359,7 @@ def event_study(
                 "interpretation": "No shock events or no narrative variables available."}
 
     df = aligned_df.copy().sort_values("date").reset_index(drop=True)
-    df["date_norm"] = df["date"].dt.normalize()
+    df["date_norm"] = pd.to_datetime(df["date"], utc=True, errors="coerce").dt.normalize()
 
     events = []
 
@@ -433,20 +448,49 @@ def run_full_analysis(
     """
     Run all analyses on an aligned DataFrame and return a results bundle
     ready for the report generator.
+
+    Each sub-analysis is wrapped in a try/except so that degenerate data
+    (e.g. constant series, too few observations) in one test never prevents
+    the others from running.
     """
+    _empty_granger = {
+        "stationarity": {}, "results": {}, "summary_table": pd.DataFrame(),
+        "interpretation": "Granger tests skipped (data insufficient or constant series).",
+    }
+    _empty_xcorr = {
+        "lags": [], "correlations": [], "peak_lag": None, "peak_corr": None,
+        "interpretation": "Cross-correlation skipped (insufficient data).",
+    }
+    _empty_events = {
+        "events": [], "aggregate_table": pd.DataFrame(),
+        "interpretation": "Event study skipped (no shock events or insufficient data).",
+    }
+
     if verbose:
         print("Running statistical analysis …")
         print("  → Granger causality tests")
 
-    granger = run_granger_tests(aligned_df, max_lag=5)
+    try:
+        granger = run_granger_tests(aligned_df, max_lag=5)
+    except Exception as e:
+        granger = {**_empty_granger,
+                   "interpretation": f"Granger tests failed: {e}"}
 
     if verbose:
         print("  → Cross-correlation analysis")
-    xcorr = cross_correlation_analysis(aligned_df)
+    try:
+        xcorr = cross_correlation_analysis(aligned_df)
+    except Exception as e:
+        xcorr = {**_empty_xcorr,
+                 "interpretation": f"Cross-correlation failed: {e}"}
 
     if verbose:
         print("  → Event study")
-    events = event_study(aligned_df, shocks_df)
+    try:
+        events = event_study(aligned_df, shocks_df)
+    except Exception as e:
+        events = {**_empty_events,
+                  "interpretation": f"Event study failed: {e}"}
 
     if verbose:
         print(f"\n{granger['interpretation']}")
