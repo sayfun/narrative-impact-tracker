@@ -669,20 +669,20 @@ def render_sidebar():
             "→ Network tab → look for the CLOB API call → copy the first value from `clobTokenIds`.\n\n"
             "Example (Trump 2024 winner): `21742633143463906290569050155826389240456629048843189025793797045763932443804`"
         )
-        manual_token = st.text_input(
+        _token_input = st.text_input(
             "YES token ID",
             value="",
             placeholder="Paste token ID here…",
         )
-        manual_question = st.text_input(
+        _question_input = st.text_input(
             "Market label (for display)",
             value="",
             placeholder="e.g. Presidential Election Winner 2024",
         )
-        if manual_token and manual_question:
-            market_question = manual_question
-            token_ids       = [manual_token.strip()]
-            st.success(f"Using manual token: {manual_token[:20]}…")
+        if _token_input and _question_input:
+            market_question = _question_input
+            manual_token    = _token_input.strip()
+            st.success(f"Using manual token: {_token_input[:20]}…")
 
     # ── Step 3: topic terms for GDELT ──
     st.sidebar.divider()
