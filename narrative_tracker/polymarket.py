@@ -250,9 +250,13 @@ def fetch_price_history(
     if not history:
         return pd.DataFrame(columns=["date", "probability", "token_id"])
 
-    df = pd.DataFrame(history)           # columns: t (unix), p (price 0–1)
+    df = pd.DataFrame(history)           # columns: t (unix int or ISO string), p (price 0–1)
     df = df.rename(columns={"t": "date", "p": "probability"})
-    df["date"] = pd.to_datetime(df["date"], unit="s", utc=True)
+    # CLOB API returns unix seconds for active markets, ISO strings for archived ones
+    if pd.api.types.is_numeric_dtype(df["date"]):
+        df["date"] = pd.to_datetime(df["date"], unit="s", utc=True)
+    else:
+        df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
     df["probability"] = pd.to_numeric(df["probability"], errors="coerce")
     df["token_id"] = token_id
 
