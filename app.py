@@ -562,35 +562,36 @@ def render_sidebar():
     st.sidebar.divider()
 
     # ── Curated historical markets (archived from API) ────────────────────────
+    # Token IDs verified against CLOB API as of April 2026.
     HISTORICAL_MARKETS = {
         "— pick a featured market —": None,
-        "🇺🇸 Presidential Election Winner 2024 (Trump vs Harris)": {
-            "token_id": "21742633143463906290569050155826389240456629048843189025793797045763932443804",
-            "question": "Presidential Election Winner 2024",
+        "🇺🇸 Will Trump win the 2024 US presidential election?": {
+            "token_id": "21742633143463906290569050155826241533067272736897614950488156847949938836455",
+            "question": "Will Donald Trump win the 2024 US Presidential Election?",
             "suggested_terms": "Trump, Harris, election, president",
             "suggested_start": "2024-07-15",
             "suggested_end":   "2024-11-07",
         },
-        "🇺🇸 Will Trump win the 2024 presidential election?": {
-            "token_id": "69236923620077691027083946871148767382819025171534185409556716274216206771",
-            "question": "Will Trump win the 2024 presidential election?",
-            "suggested_terms": "Trump, election, Republican, MAGA",
+        "🇺🇸 Will Harris win the 2024 US presidential election?": {
+            "token_id": "69236923620077691027083946871148646972011131466059644796654161903044970987404",
+            "question": "Will Kamala Harris win the 2024 US Presidential Election?",
+            "suggested_terms": "Harris, Trump, election, Democrat",
             "suggested_start": "2024-07-15",
             "suggested_end":   "2024-11-07",
         },
-        "🇺🇦 Ukraine ceasefire 2025–2026": {
-            "token_id": "76885168648776633882454084559225614067599803855804481698042219701097697688",
-            "question": "Ukraine ceasefire 2025–2026",
-            "suggested_terms": "Ukraine, ceasefire, peace, war, Russia",
-            "suggested_start": "2025-01-01",
-            "suggested_end":   "2026-04-01",
+        "🇺🇦 Russia x Ukraine ceasefire in 2025?": {
+            "token_id": "15974786252393396629980467963784550802583781222733347534844974829144359265969",
+            "question": "Russia x Ukraine ceasefire in 2025?",
+            "suggested_terms": "Ukraine, ceasefire, peace, Russia, war",
+            "suggested_start": "2024-12-30",
+            "suggested_end":   "2025-12-31",
         },
-        "🇮🇷 US attack on Iran 2026": {
-            "token_id": "55527562813268502763749084855188242669753310943082818604279838396371048583",
-            "question": "US attack on Iran 2026",
+        "🇮🇷 US strikes Iran by March 31, 2026?": {
+            "token_id": "114073431155826730926052468626599502581519892859155799641358176120253844422606",
+            "question": "US strikes Iran by March 31, 2026?",
             "suggested_terms": "Iran, attack, military, strike, nuclear",
-            "suggested_start": "2025-10-01",
-            "suggested_end":   "2026-04-13",
+            "suggested_start": "2025-12-23",
+            "suggested_end":   "2026-02-28",
         },
     }
 
