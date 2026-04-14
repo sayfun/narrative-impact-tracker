@@ -835,6 +835,23 @@ def render_results(result: dict, inputs: dict):
             "Coverage query: `" + inputs.get("gdelt_query", "") + "`"
         )
 
+    with st.expander("🔍 Debug: raw probability data (click if chart is empty)"):
+        prob_data = aligned[["date", "probability"]].copy()
+        non_null = prob_data["probability"].notna().sum()
+        st.write(f"**{non_null}/{len(prob_data)} days** have probability data.")
+        if non_null > 0:
+            st.write("First / last 5 rows with data:")
+            has_data = prob_data[prob_data["probability"].notna()]
+            st.dataframe(pd.concat([has_data.head(5), has_data.tail(5)]), use_container_width=True)
+        else:
+            st.warning(
+                "Zero probability rows matched. Possible causes:\n"
+                "1. Token ID is wrong for this market\n"
+                "2. Market was created after your start date (try extending the date range)\n"
+                "3. CLOB API returned an unexpected timestamp format\n\n"
+                "Try adjusting the date range (e.g. start 3–6 months earlier) and re-running."
+            )
+
     st.divider()
 
     fulltext_source = result.get("fulltext_source")

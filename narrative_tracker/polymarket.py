@@ -252,15 +252,34 @@ def fetch_price_history(
 
     df = pd.DataFrame(history)           # columns: t (unix int or ISO string), p (price 0–1)
     df = df.rename(columns={"t": "date", "p": "probability"})
-    # CLOB API returns unix seconds for active markets, ISO strings for archived ones
-    if pd.api.types.is_numeric_dtype(df["date"]):
-        df["date"] = pd.to_datetime(df["date"], unit="s", utc=True)
+
+    # ── Robust timestamp parsing ─────────────────────────────────────────────
+    # The CLOB API is inconsistent across market states:
+    #   - Active markets:   t is an integer (Unix seconds)
+    #   - Archived markets: t may be an ISO string OR an integer stored as
+    #     a Python object (object-dtype column).
+    # pandas interprets integers in an object-dtype column as NANOSECONDS when
+    # passed to pd.to_datetime() without unit=, producing 1970-era dates.
+    # Fix: always try numeric conversion first; fall back to ISO string parsing.
+    date_col = df["date"]
+    if pd.api.types.is_numeric_dtype(date_col):
+        # Clean integer or float column — parse as Unix seconds
+        df["date"] = pd.to_datetime(date_col, unit="s", utc=True)
     else:
-        df["date"] = pd.to_datetime(df["date"], utc=True, errors="coerce")
+        # May be object dtype containing either ints or ISO strings
+        numeric = pd.to_numeric(date_col, errors="coerce")
+        if numeric.notna().any():
+            # At least some values are parseable as numbers → Unix seconds
+            df["date"] = pd.to_datetime(numeric, unit="s", utc=True)
+        else:
+            # All values are strings → ISO 8601 / RFC 3339 format
+            df["date"] = pd.to_datetime(date_col, utc=True, errors="coerce")
+
     df["probability"] = pd.to_numeric(df["probability"], errors="coerce")
     df["token_id"] = token_id
 
-    # Normalise to end-of-day: keep the last observation per calendar day
+    # Normalise to daily: keep the last observation per calendar day,
+    # then normalize the date to midnight so it merges cleanly later.
     df["day"] = df["date"].dt.normalize()
     df = (
         df.sort_values("date")
@@ -270,6 +289,10 @@ def fetch_price_history(
           .sort_values("date")
           .reset_index(drop=True)
     )
+    # Normalise to midnight *after* dedup so that filter comparisons are
+    # date-vs-date (not intraday timestamp vs midnight), and so that the
+    # date column is already clean when pipeline._build_aligned_frame merges it.
+    df["date"] = df["date"].dt.normalize()
 
     # Filter to requested window if start/end were specified
     if start is not None:
