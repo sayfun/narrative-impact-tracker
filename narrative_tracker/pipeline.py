@@ -205,9 +205,14 @@ class NarrativePipeline:
         )
         base = pd.DataFrame({"date": date_range})
 
+        def _to_date_col(series: pd.Series) -> pd.Series:
+            """Force a column to UTC datetime and normalise to midnight, safely."""
+            s = pd.to_datetime(series, utc=True, errors="coerce")
+            return s.dt.normalize()
+
         # ── Polymarket (forward-fill gaps, e.g. weekends) ──
         prob = self.prob_df[["date", "probability"]].copy()
-        prob["date"] = prob["date"].dt.normalize()
+        prob["date"] = _to_date_col(prob["date"])
         prob = prob.drop_duplicates("date")
         merged = base.merge(prob, on="date", how="left")
         merged["probability"] = merged["probability"].ffill()
@@ -220,7 +225,7 @@ class NarrativePipeline:
         # ── GDELT coverage volume ──
         if self.coverage_df is not None and not self.coverage_df.empty:
             cov = self.coverage_df.copy()
-            cov["date"] = cov["date"].dt.normalize()
+            cov["date"] = _to_date_col(cov["date"])
             cov = cov.rename(columns={"rolling_3d": "rolling_3d_vol"})
             merged = merged.merge(
                 cov[["date", "article_count", "volume_norm", "rolling_3d_vol"]],
@@ -237,7 +242,7 @@ class NarrativePipeline:
         # ── GDELT tone (from article-level aggregation) ──
         if self.tone_df is not None and not self.tone_df.empty:
             tone = self.tone_df.copy()
-            tone["date"] = tone["date"].dt.normalize()
+            tone["date"] = _to_date_col(tone["date"])
             merged = merged.merge(
                 tone[["date", "mean_tone", "tone_std", "mean_positive", "mean_negative"]],
                 on="date", how="left"
@@ -252,10 +257,11 @@ class NarrativePipeline:
             threshold=self.shock_threshold,
             window_days=self.shock_window,
         )
-        shock_days = set(shock_df["date"].dt.normalize())
+        shock_days = set(_to_date_col(shock_df["date"])) if not shock_df.empty else set()
         merged["is_shock"] = merged["date"].isin(shock_days)
         merged["shock_direction"] = merged["date"].map(
-            dict(zip(shock_df["date"].dt.normalize(), shock_df["direction"]))
+            dict(zip(_to_date_col(shock_df["date"]), shock_df["direction"]))
+            if not shock_df.empty else {}
         )
 
         return merged.reset_index(drop=True)
