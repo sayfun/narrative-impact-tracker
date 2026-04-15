@@ -95,38 +95,84 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
             if re.search(r'\b' + re.escape(w) + r'\b', q_lower)
         )
 
-    url = f"{GAMMA_BASE}/markets"
+    markets_url = f"{GAMMA_BASE}/markets"
+    events_url  = f"{GAMMA_BASE}/events"
     all_rows: list[dict] = []
     seen_ids: set[str] = set()
 
-    def _fetch_page(params: dict) -> None:
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+    def _add_market(m: dict, event_score: int = 0) -> None:
+        """Parse one raw market dict and add it to all_rows if not seen."""
+        row = _market_row(m)
+        if row["token_ids"] and row["question"] and row["condition_id"] not in seen_ids:
+            # Use the higher of question-level or event-title-level score.
+            # This ensures sub-markets inside a matching event (e.g. all 20
+            # "Will Bieber feature X?" sub-questions) rank highly even if the
+            # individual question only mentions one query word.
+            row["_score"] = max(_score(row["question"]), event_score)
+            all_rows.append(row)
+            seen_ids.add(row["condition_id"])
+
+    def _fetch_markets_page(params: dict) -> None:
+        resp = requests.get(markets_url, params=params, timeout=REQUEST_TIMEOUT)
         if resp.status_code != 200:
             return
         for m in resp.json() or []:
-            row = _market_row(m)
-            if row["token_ids"] and row["question"] and row["condition_id"] not in seen_ids:
-                row["_score"] = _score(row["question"])
-                all_rows.append(row)
-                seen_ids.add(row["condition_id"])
+            _add_market(m)
 
-    # The Gamma API's status filter params (active=, closed=) are unreliable —
-    # large resolved markets like the 2024 US election don't reliably appear
-    # in closed=true or active=false pages. Instead we fetch from multiple
-    # sort orders with NO status filter and let client-side logic handle it.
+    # ── Pool A: currently trading, ranked by 24h volume ───────────────────────
+    # Catches today's hot markets regardless of all-time volume.
+    _fetch_markets_page({"limit": 200, "active": "true", "closed": "false",
+                         "order": "volume24hr", "ascending": "false", "offset": 0})
+    _fetch_markets_page({"limit": 200, "active": "true", "closed": "false",
+                         "order": "volume24hr", "ascending": "false", "offset": 200})
 
-    # Pool A: currently trading, ranked by 24h volume
-    _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                 "order": "volume24hr", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "active": "true", "closed": "false",
-                 "order": "volume24hr", "ascending": "false", "offset": 200})
+    # ── Pool B: all markets by all-time volume (no status filter) ─────────────
+    # Catches big historical markets ($1B+ volume) that may be archived.
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 0})
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 200})
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 400})
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 600})
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 800})
+    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 1000})
 
-    # Pool B: everything sorted by all-time volume (no status filter) —
-    # this is where the big historical markets ($1B+ volume) appear
-    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 200})
-    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 400})
-    _fetch_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 600})
+    # ── Pool C: recent events, filter by event title, add ALL sub-markets ─────
+    # The Gamma API's q= text-search parameter is broken (returns random markets
+    # by volume regardless of the query). Instead, we fetch recent events sorted
+    # by creation date and filter on the event TITLE client-side.
+    #
+    # This is the critical pool for new, low-volume markets (e.g. a Justin Bieber
+    # Coachella event with $8K volume would never appear in Pools A or B, but its
+    # event title matches the query immediately). When an event matches, we add
+    # ALL of its sub-markets so users can pick the exact outcome they want.
+    try:
+        for ev_offset in [0, 100, 200, 300]:
+            resp = requests.get(
+                events_url,
+                params={
+                    "active": "true", "closed": "false",
+                    "order": "startDate", "ascending": "false",
+                    "limit": 100, "offset": ev_offset,
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                break
+            events = resp.json() or []
+            if not events:
+                break
+            for event in events:
+                event_title = event.get("title", "")
+                ev_score = sum(
+                    1 for w in query_words
+                    if re.search(r'\b' + re.escape(w) + r'\b', event_title.lower())
+                )
+                if ev_score == 0:
+                    continue  # event title has no query words — skip
+                # Add every sub-market from this matching event
+                for m in event.get("markets", []):
+                    _add_market(m, event_score=ev_score)
+    except Exception:
+        pass  # Pool C is best-effort; Pools A/B still run
 
     # For longer queries require more matches — prevents 2028 speculation markets
     # scoring on just "presidential" + "election" when searching for 2024 markets
