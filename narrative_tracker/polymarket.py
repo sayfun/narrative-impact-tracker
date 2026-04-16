@@ -72,12 +72,21 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
             "token_ids":    _parse_token_ids(m.get("clobTokenIds")),
         }
 
-    # Stopwords that are too common to be meaningful match signals
+    # Stopwords that are too common to be meaningful match signals.
+    # Keep this list tight — only words that carry no discriminating power.
     _STOPWORDS = {
+        # Articles / pronouns / conjunctions
         "will", "the", "who", "what", "when", "which", "that", "this",
         "with", "from", "have", "has", "been", "are", "was", "were",
         "for", "and", "not", "but", "can", "its", "his", "her", "they",
-        "win",  # too short and a substring of "winner", "twins", etc.
+        # Generic verbs / prepositions — carry no topic signal
+        "make", "take", "come", "does", "more", "than", "some",
+        "into", "over", "just", "also", "back", "time", "only",
+        # Round / place — appear in every sports bracket AND every election
+        # first-round result, adding huge noise without discriminating power
+        "round", "place", "first", "second", "third",
+        # Short words that create false matches
+        "win",  # substring of "winner", "twins", etc.
         "set",  # matches esports "Set 1", "Set 2"
     }
 
@@ -174,11 +183,12 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
     except Exception:
         pass  # Pool C is best-effort; Pools A/B still run
 
-    # For longer queries require more matches — prevents 2028 speculation markets
-    # scoring on just "presidential" + "election" when searching for 2024 markets
+    # Minimum score thresholds.
+    # Users rarely type market question verbatim — "lakers 2nd round" maps to
+    # "advance to the NBA Finals", so we only need 1 strong distinctive word to
+    # match for short queries. For long queries (4+ words) we require 2 matches
+    # to prevent very generic terms from flooding results.
     if len(query_words) >= 4:
-        min_score = 3
-    elif len(query_words) >= 2:
         min_score = 2
     else:
         min_score = 1
