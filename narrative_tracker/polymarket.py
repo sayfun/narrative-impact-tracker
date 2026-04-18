@@ -124,9 +124,13 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
 
     def _fetch_markets_page(params: dict) -> None:
         resp = requests.get(markets_url, params=params, timeout=REQUEST_TIMEOUT)
-        if resp.status_code != 200:
+        if resp.status_code != 200 or not resp.content:
             return
-        for m in resp.json() or []:
+        try:
+            data = resp.json()
+        except Exception:
+            return
+        for m in (data or []):
             _add_market(m)
 
     # ── Pool A: currently trading, ranked by 24h volume ───────────────────────
@@ -165,9 +169,12 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
                 },
                 timeout=REQUEST_TIMEOUT,
             )
-            if resp.status_code != 200:
+            if resp.status_code != 200 or not resp.content:
                 break
-            events = resp.json() or []
+            try:
+                events = resp.json() or []
+            except Exception:
+                break
             if not events:
                 break
             for event in events:

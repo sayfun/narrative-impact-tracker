@@ -660,6 +660,18 @@ def render_sidebar():
                 "suggested_end":   date.today().isoformat(),
             }
 
+    # "Analyze →" button on the landing page stores a pick in session state.
+    # Treat it exactly like selecting from the trending dropdown.
+    session_pick = st.session_state.get("trending_pick")
+    if session_pick and not featured_data and not trending_data:
+        trending_data = {
+            "token_id":       session_pick["token_id"],
+            "question":       session_pick["question"],
+            "suggested_terms": "",
+            "suggested_start": (date.today() - timedelta(days=90)).isoformat(),
+            "suggested_end":   date.today().isoformat(),
+        }
+
     # If either a featured OR trending market is chosen, it drives everything.
     entry_data = featured_data or trending_data
 
@@ -1149,13 +1161,80 @@ def main():
         return
 
     if not inputs["run"]:
-        # Landing / About page
+        # ── Landing page ──────────────────────────────────────────────────────
         st.title("Narrative Impact Tracker")
-        st.caption("Empirically measure the influence of prediction market probability movements on media narratives.")
+        st.caption(
+            "Empirically measure the influence of prediction market probability "
+            "movements on media narratives. Pick a market in the sidebar or click "
+            "**Analyze →** on any trending market below."
+        )
 
-        tab1, tab2 = st.tabs(["How to use", "About & methodology"])
+        # ── Trending markets grid ─────────────────────────────────────────────
+        st.subheader("🔥 What's moving right now")
+        st.caption(
+            "Markets ranked by a composite of 24h trading volume and 72h "
+            "probability movement — where narratives are actively being constructed."
+        )
 
-        with tab1:
+        try:
+            t_df = trending_markets_cached(_v=1)
+        except Exception:
+            t_df = None
+
+        if t_df is not None and not t_df.empty:
+            # Show in a 3-column grid
+            cols_per_row = 3
+            rows = [t_df.iloc[i:i+cols_per_row] for i in range(0, len(t_df), cols_per_row)]
+            for row_df in rows:
+                cols = st.columns(cols_per_row)
+                for col, (_, mkt) in zip(cols, row_df.iterrows()):
+                    delta   = mkt.get("prob_delta_72h", 0) or 0
+                    vol     = mkt.get("volume_24hr", 0) or 0
+                    score   = mkt.get("trending_score", 0) or 0
+                    q       = mkt.get("question", "")
+                    arrow   = "▲" if delta > 0.005 else ("▼" if delta < -0.005 else "●")
+                    colour  = "#1a9641" if delta > 0.005 else ("#d73027" if delta < -0.005 else "#888")
+                    q_disp  = (q[:72] + "…") if len(q) > 72 else q
+                    with col:
+                        st.markdown(
+                            f"""<div style="border:1px solid #e0e0e0; border-radius:8px;
+                                padding:14px 16px; margin-bottom:4px; min-height:130px;
+                                background:#fff;">
+                                <div style="font-size:13px; font-weight:600;
+                                    color:#222; margin-bottom:8px; line-height:1.4;">
+                                    {q_disp}
+                                </div>
+                                <div style="font-size:13px; color:{colour};
+                                    font-weight:700; margin-bottom:2px;">
+                                    {arrow} {delta:+.1%} (72h)
+                                </div>
+                                <div style="font-size:12px; color:#888;">
+                                    ${vol/1e3:,.0f}K / 24h &nbsp;·&nbsp;
+                                    score {score:.2f}
+                                </div>
+                            </div>""",
+                            unsafe_allow_html=True,
+                        )
+                        if st.button("Analyze →", key=f"trend_btn_{mkt.name}",
+                                     use_container_width=True):
+                            # Pre-populate session state so the sidebar & pipeline
+                            # pick this market up on the next rerun.
+                            st.session_state["trending_pick"] = {
+                                "token_id": mkt["token_ids"][0],
+                                "question": q,
+                            }
+                            st.rerun()
+        else:
+            st.info(
+                "Trending data loading… if this persists, the Polymarket API "
+                "may be temporarily rate-limiting. Try refreshing in a moment.",
+                icon="⏳",
+            )
+
+        st.divider()
+
+        # ── How-to and methodology (collapsed below the fold) ─────────────────
+        with st.expander("📖 How to use this tool", expanded=False):
             st.markdown("""
 ### Quick start
 
@@ -1191,65 +1270,47 @@ def main():
 - The date range should cover the period when the market was *actively trading*, not after it resolved
 """)
 
-        with tab2:
+        with st.expander("🔬 About & methodology", expanded=False):
             st.markdown("""
 ### What this tool measures
 
 Prediction markets like Polymarket don't just aggregate information — they construct and circulate stories about possible futures. This tool asks: **do probability movements cause measurable changes in how media frames a story?**
 
-It implements a three-mode enrollment framework connecting financial, discursive, and epistemic dimensions of prediction market influence on narrative.
-
 ### Narrative variables
 
 | Variable | Full name | What it measures |
 |----------|-----------|-----------------|
-| **ERS** | Epistemic Register Score | Ratio of high-certainty language ("will win", "inevitable") to hedging language ("might", "could"). Positive = certain framing; negative = hedged. |
-| **PCF** | Probability Citation Frequency | Density of explicit probability language and prediction market citations per 1,000 words. Direct measure of market-to-media uptake. |
-| **NCS** | Narrative Closure Score | Density of possibility-foreclosing language ("no path to victory", "effectively over", "mathematically eliminated"). Measures prediction markets as story-ending machines. |
-| **PII** | Personalisation Intensity (proxy) | Fraction of sentences containing named persons. Captures secondary narrativisation — when structural probability becomes character-driven story. |
-| **EAI** | Epistemic Authority Index | Composite index (0–1) combining PCF, ERS, and NCS into a single measure of how strongly coverage positions market probability as narrative authority. EAI = 0.40×PCF + 0.35×ERS + 0.25×NCS. |
-
-*ERS, PCF, NCS, and EAI are extracted from article headlines when using GDELT (free, no key required). Provide a [MediaCloud API key](https://search.mediacloud.org/register) for full-text extraction — this substantially improves metric sensitivity. Validate against a human-coded sample before using as primary outcomes in publication.*
+| **ERS** | Epistemic Register Score | Ratio of high-certainty language ("will win", "inevitable") to hedging language ("might", "could"). |
+| **PCF** | Probability Citation Frequency | Density of explicit probability language and prediction market citations per 1,000 words. |
+| **NCS** | Narrative Closure Score | Density of possibility-foreclosing language ("no path to victory", "effectively over"). |
+| **EAI** | Epistemic Authority Index | Composite 0–1 index: EAI = 0.40×PCF + 0.35×ERS + 0.25×NCS. |
 
 ### Statistical methods
 
-**Granger causality** — tests whether lagged probability movements predict narrative variable shifts above and beyond the series' own lags. Applied to first-differenced series after ADF stationarity testing. Both directions tested (probability → narrative and narrative → probability).
-
-**Event study** — identifies sharp probability movements (≥8pp over 2 days by default) and measures pre/post changes in narrative variables within a ±5-day window.
-
+**Granger causality** — lagged probability movements → narrative variable shifts, bidirectional, ADF-corrected.
+**Event study** — pre/post narrative change around ≥8pp probability shocks.
 **Cross-correlation** — peak lag at which probability-coverage co-movement is strongest.
 
-> ⚠️ **Granger causality ≠ structural causation.** Both series may respond to a common event with different lag structures. For publication, manually classify each shock event as "clean" (no major scheduled event within ±72 hours) or "confounded" and report results separately.
+> ⚠️ Granger causality ≠ structural causation. Manually classify shock events as clean vs. confounded for publication.
 
 ### Data sources
 
-| Source | What it provides | Cost |
-|--------|-----------------|------|
-| [Polymarket CLOB API](https://clob.polymarket.com) | Daily YES/NO probabilities | Free, public |
-| [GDELT v2 Doc API](https://api.gdeltproject.org) | Coverage volume, article tone, headline text | Free, public |
-| [MediaCloud](https://search.mediacloud.org) | Full article text across thousands of outlets | Free (academic key) |
-
-### Known limitations
-
-- GDELT skews toward English-language wire services; under-represents Substack, financial media, non-English press
-- Polymarket market search covers ~400 most-active markets; niche topics may not appear
-- Polymarket coverage is strongest for US politics, geopolitics, macro, and crypto
-- Granger tests require ≥20 observations after differencing; short windows may produce no results
+| Source | Cost |
+|--------|------|
+| [Polymarket CLOB API](https://clob.polymarket.com) | Free |
+| [GDELT v2 Doc API](https://api.gdeltproject.org) | Free |
+| [MediaCloud](https://search.mediacloud.org) | Free (academic key) |
 
 ### Citation
-
-If you use this tool in published research:
-
 ```
 Funk, S. H. (2026). Narrative Impact Tracker [Software].
 https://github.com/sayfun/narrative-impact-tracker
 ```
-
-### Source code
-
-[github.com/sayfun/narrative-impact-tracker](https://github.com/sayfun/narrative-impact-tracker) — MIT licence
 """)
         return
+
+    # Clear any pending trending pick so it doesn't persist across reruns
+    st.session_state.pop("trending_pick", None)
 
     # Run pipeline
     with st.status("Running analysis…", expanded=True) as status:
