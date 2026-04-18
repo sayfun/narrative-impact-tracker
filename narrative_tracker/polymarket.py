@@ -273,10 +273,13 @@ def get_trending_markets(
         },
         timeout=REQUEST_TIMEOUT,
     )
-    if resp.status_code != 200:
+    if resp.status_code != 200 or not resp.content:
         return pd.DataFrame()
 
-    raw = resp.json() or []
+    try:
+        raw = resp.json() or []
+    except Exception:
+        return pd.DataFrame()
     if not raw:
         return pd.DataFrame()
 
@@ -430,7 +433,10 @@ def fetch_price_history(
         }
         resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
     else:
         # Chunked fetch: CLOB API rejects intervals > ~14 days for custom ranges
         # Use interval=all and filter client-side (simpler and reliable)
@@ -441,7 +447,10 @@ def fetch_price_history(
         }
         resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
-        data = resp.json()
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
 
     history = data.get("history", [])
     if not history:
