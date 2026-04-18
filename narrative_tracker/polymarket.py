@@ -18,8 +18,9 @@ import json
 import time
 import requests
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ── constants ────────────────────────────────────────────────────────────────
@@ -216,6 +217,139 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
     df = (df.sort_values("_sort", ascending=False)
             .drop(columns=["_score", "_sort"])
             .head(limit)
+            .reset_index(drop=True))
+    return df
+
+
+def get_trending_markets(
+    top_n:            int   = 30,
+    return_n:         int   = 15,
+    movement_window_hours: int = 72,
+    volume_weight:    float = 0.5,
+    movement_weight:  float = 0.5,
+    min_volume_24hr:  float = 1000.0,
+    max_workers:      int   = 10,
+) -> pd.DataFrame:
+    """
+    Surface markets where a narrative is *actively* being constructed right now.
+
+    Hybrid approach:
+      1. One Gamma call: fetch top `top_n` active markets by 24h volume.
+      2. Parallel CLOB calls: fetch recent price history for each, compute
+         |probability change| over the last `movement_window_hours`.
+      3. Composite rank = normalised volume24hr × volume_weight
+                        + normalised |movement|  × movement_weight.
+
+    Theoretically grounded for narrative-impact work: a market that's moving
+    is generating a new story; a stable-but-liquid market is not.
+
+    Returns a DataFrame with the same columns as `search_markets()` plus:
+        volume_24hr       (float) — raw 24h USD volume
+        prob_delta_72h    (float) — signed probability change over window
+        movement_abs      (float) — |prob_delta_72h|
+        trending_score    (float) — composite 0–1 score (already sorted desc)
+
+    Empty DataFrame if the Gamma endpoint returns nothing.
+    """
+    import numpy as np
+
+    # ── 1. Pull top markets by 24h volume from Gamma ──────────────────────────
+    resp = requests.get(
+        f"{GAMMA_BASE}/markets",
+        params={
+            "active":    "true",
+            "closed":    "false",
+            "order":     "volume24hr",
+            "ascending": "false",
+            "limit":     top_n,
+            "offset":    0,
+        },
+        timeout=REQUEST_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        return pd.DataFrame()
+
+    raw = resp.json() or []
+    if not raw:
+        return pd.DataFrame()
+
+    def _parse_token_ids(r):
+        if r is None:
+            return []
+        if isinstance(r, list):
+            return r
+        if isinstance(r, str):
+            try:
+                p = json.loads(r)
+                return p if isinstance(p, list) else []
+            except (json.JSONDecodeError, ValueError):
+                return []
+        return []
+
+    rows = []
+    for m in raw:
+        tokens = _parse_token_ids(m.get("clobTokenIds"))
+        vol24  = float(m.get("volume24hr", 0) or 0)
+        if not tokens or not m.get("question") or vol24 < min_volume_24hr:
+            continue
+        rows.append({
+            "condition_id": m.get("conditionId", ""),
+            "question":     m.get("question", ""),
+            "end_date_iso": m.get("endDateIso") or m.get("endDate", ""),
+            "active":       m.get("active", False),
+            "closed":       m.get("closed", False),
+            "volume":       float(m.get("volume", 0) or 0),
+            "volume_24hr":  vol24,
+            "liquidity":    float(m.get("liquidityClob") or m.get("liquidity", 0) or 0),
+            "token_ids":    tokens,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    # ── 2. Compute 72h probability movement in parallel ───────────────────────
+    window_start = pd.Timestamp.now(tz="UTC") - timedelta(hours=movement_window_hours)
+
+    def _movement(row: dict) -> float:
+        """Return signed probability change over the movement window, or NaN."""
+        try:
+            # Hourly fidelity — we need recent intraday, not daily
+            hist = fetch_price_history(
+                row["token_ids"][0],
+                start=window_start - timedelta(hours=6),  # small buffer for start
+                end=None,
+                fidelity=60,
+            )
+            if hist.empty or len(hist) < 2:
+                return float("nan")
+            return float(hist["probability"].iloc[-1] - hist["probability"].iloc[0])
+        except Exception:
+            return float("nan")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_movement, r): i for i, r in enumerate(rows)}
+        for fut in as_completed(futures):
+            i = futures[fut]
+            rows[i]["prob_delta_72h"] = fut.result()
+
+    df = pd.DataFrame(rows)
+    df["prob_delta_72h"] = df["prob_delta_72h"].fillna(0.0)
+    df["movement_abs"]   = df["prob_delta_72h"].abs()
+
+    # ── 3. Composite score — min-max normalise each signal to [0, 1] ──────────
+    def _norm(s: pd.Series) -> pd.Series:
+        lo, hi = s.min(), s.max()
+        if hi - lo < 1e-12:
+            return pd.Series([0.0] * len(s), index=s.index)
+        return (s - lo) / (hi - lo)
+
+    df["trending_score"] = (
+        _norm(df["volume_24hr"])  * volume_weight +
+        _norm(df["movement_abs"]) * movement_weight
+    )
+
+    df = (df.sort_values("trending_score", ascending=False)
+            .head(return_n)
             .reset_index(drop=True))
     return df
 

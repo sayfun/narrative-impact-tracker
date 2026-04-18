@@ -548,6 +548,17 @@ def search_markets_cached(query: str, include_active: bool = True, include_close
     return valid
 
 
+@st.cache_data(show_spinner=False, ttl=600, max_entries=4)
+def trending_markets_cached(_v: int = 1):
+    # Cached for 10 minutes — "trending" should feel fresh but a single API burst
+    # shouldn't happen on every sidebar interaction.
+    from narrative_tracker.polymarket import get_trending_markets
+    df = get_trending_markets(top_n=30, return_n=12)
+    if df is None or df.empty:
+        return df
+    return df[df["token_ids"].apply(lambda x: len(x) > 0)].reset_index(drop=True)
+
+
 # ── sidebar (inputs) ──────────────────────────────────────────────────────────
 
 def render_sidebar():
@@ -607,11 +618,56 @@ def render_sidebar():
     )
     featured_data = HISTORICAL_MARKETS[featured]
 
+    # ── Trending now — composite of 24h volume + 72h |probability movement| ──
+    trending_data = None
+    try:
+        trending_df = trending_markets_cached(_v=1)
+    except Exception:
+        trending_df = None
+
+    if trending_df is not None and not trending_df.empty and not featured_data:
+        def _trend_label(row):
+            delta = row.get("prob_delta_72h", 0) or 0
+            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "●")
+            vol   = row.get("volume_24hr", 0) or 0
+            q     = row.get("question", "")
+            q_disp = (q[:50] + "…") if len(q) > 50 else q
+            return f"{arrow} {delta:+.0%}  ${vol/1e3:,.0f}K  {q_disp}"
+
+        trend_options = ["— pick a trending market —"] + [
+            _trend_label(row.to_dict()) for _, row in trending_df.iterrows()
+        ]
+        trend_choice = st.sidebar.selectbox(
+            "🔥 Trending now",
+            options=trend_options,
+            index=0,
+            help=(
+                "Markets where a narrative is being actively constructed right now — "
+                "ranked by a composite of 24h trading volume and 72h |probability movement|. "
+                "▲/▼ = direction of 72h move. Refreshes every 10 min."
+            ),
+        )
+        if trend_choice != trend_options[0]:
+            idx = trend_options.index(trend_choice) - 1
+            row = trending_df.iloc[idx]
+            trending_data = {
+                "token_id": row["token_ids"][0],
+                "question": row["question"],
+                # Reasonable defaults for a currently-active market:
+                # 90-day lookback ending today gives the movement context.
+                "suggested_terms": "",
+                "suggested_start": (date.today() - timedelta(days=90)).isoformat(),
+                "suggested_end":   date.today().isoformat(),
+            }
+
+    # If either a featured OR trending market is chosen, it drives everything.
+    entry_data = featured_data or trending_data
+
     search_query = st.sidebar.text_input(
         "Or search Polymarket",
-        value="" if featured_data else "presidential election winner 2024",
-        help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'. Clear the featured market above to enable.",
-        disabled=bool(featured_data),
+        value="" if entry_data else "presidential election winner 2024",
+        help="Type any topic — e.g. 'US attack Iran', 'UK election', 'Fed rate cut'. Clear the featured/trending market above to enable.",
+        disabled=bool(entry_data),
     )
     _fc1, _fc2 = st.sidebar.columns(2)
     include_active = _fc1.checkbox("Active", value=True,  help="Include currently trading markets")
@@ -623,10 +679,10 @@ def render_sidebar():
     token_ids       = []
     manual_token    = ""
 
-    if featured_data:
-        # Featured historical market selected — use its token directly
-        market_question = featured_data["question"]
-        manual_token    = featured_data["token_id"]
+    if entry_data:
+        # Featured or trending market selected — use its token directly
+        market_question = entry_data["question"]
+        manual_token    = entry_data["token_id"]
         st.sidebar.success(f"✓ {market_question}")
     elif search_query:
         with st.sidebar:
@@ -688,7 +744,14 @@ def render_sidebar():
     # ── Step 3: topic terms for GDELT ──
     st.sidebar.divider()
     st.sidebar.subheader("2 — Coverage query")
-    default_terms = featured_data["suggested_terms"] if featured_data else "Trump, Harris, election, president"
+    _default_terms_raw = (entry_data and entry_data.get("suggested_terms")) or ""
+    # Trending markets don't come with curated term lists — derive from the
+    # market question as a sensible starting point the user will tune.
+    if entry_data and not _default_terms_raw:
+        _q_words = [w.strip(".,?!\"'()") for w in entry_data["question"].split()]
+        _derived = [w for w in _q_words if len(w) > 4][:4]
+        _default_terms_raw = ", ".join(_derived) if _derived else "news, coverage"
+    default_terms = _default_terms_raw or "Trump, Harris, election, president"
     topics_raw = st.sidebar.text_input(
         "Topic terms (comma-separated)",
         value=default_terms,
@@ -700,8 +763,8 @@ def render_sidebar():
     st.sidebar.divider()
     st.sidebar.subheader("3 — Date range")
     col1, col2 = st.sidebar.columns(2)
-    _default_start = date.fromisoformat(featured_data["suggested_start"]) if featured_data else date(2024, 7, 15)
-    _default_end   = date.fromisoformat(featured_data["suggested_end"])   if featured_data else date(2024, 11, 7)
+    _default_start = date.fromisoformat(entry_data["suggested_start"]) if entry_data else date(2024, 7, 15)
+    _default_end   = date.fromisoformat(entry_data["suggested_end"])   if entry_data else date(2024, 11, 7)
     start_date = col1.date_input("Start", value=_default_start)
     end_date   = col2.date_input("End",   value=_default_end)
 
