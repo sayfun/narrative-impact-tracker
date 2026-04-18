@@ -114,10 +114,13 @@ def fetch_coverage_timeline(
 
     resp = _gdelt_get(params)
 
-    # GDELT occasionally returns an empty body on valid requests
+    # GDELT occasionally returns an empty body or an HTML error page
     if not resp.text.strip():
         return pd.DataFrame(columns=["date", "article_count", "volume_norm"])
-    data = resp.json()
+    try:
+        data = resp.json()
+    except Exception:
+        return pd.DataFrame(columns=["date", "article_count", "volume_norm"])
 
     # GDELT TimelineVol returns: {"timeline": [{"data": [{"date": ..., "value": ...}]}]}
     series_data = []
@@ -187,7 +190,10 @@ def fetch_articles(
 
     if not resp.text.strip():
         return pd.DataFrame()
-    data = resp.json()
+    try:
+        data = resp.json()
+    except Exception:
+        return pd.DataFrame()
 
     articles = data.get("articles", [])
     if not articles:
