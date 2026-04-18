@@ -296,12 +296,24 @@ def get_trending_markets(
                 return []
         return []
 
+    today_ts = pd.Timestamp.now(tz="UTC")
+
     rows = []
     for m in raw:
         tokens = _parse_token_ids(m.get("clobTokenIds"))
         vol24  = float(m.get("volume24hr", 0) or 0)
         if not tokens or not m.get("question") or vol24 < min_volume_24hr:
             continue
+        # Skip markets resolving within 3 days — too close to resolution
+        # for meaningful narrative analysis, and CLOB history is too sparse.
+        raw_end = m.get("endDateIso") or m.get("endDate") or ""
+        if raw_end:
+            try:
+                end_ts = pd.Timestamp(raw_end, tz="UTC")
+                if (end_ts - today_ts).days < 3:
+                    continue
+            except Exception:
+                pass
         rows.append({
             "condition_id": m.get("conditionId", ""),
             "question":     m.get("question", ""),
@@ -424,35 +436,25 @@ def fetch_price_history(
     """
     url = f"{CLOB_BASE}/prices-history"
 
-    # If no start specified, fetch full history with interval=all
-    if start is None:
-        params = {
-            "market":   token_id,
-            "interval": "all",
-            "fidelity": fidelity,
-        }
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
+    def _fetch_raw(fidel: int) -> list:
+        """Single CLOB request; returns history list or []."""
+        params = {"market": token_id, "interval": "all", "fidelity": fidel}
         try:
-            data = resp.json()
+            r = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+            r.raise_for_status()
+            return (r.json() or {}).get("history", [])
         except Exception:
-            data = {}
-    else:
-        # Chunked fetch: CLOB API rejects intervals > ~14 days for custom ranges
-        # Use interval=all and filter client-side (simpler and reliable)
-        params = {
-            "market":   token_id,
-            "interval": "all",
-            "fidelity": fidelity,
-        }
-        resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        try:
-            data = resp.json()
-        except Exception:
-            data = {}
+            return []
 
-    history = data.get("history", [])
+    # Primary fetch at requested fidelity (default: 1440 = daily candles).
+    history = _fetch_raw(fidelity)
+
+    # Fallback: some markets have very sparse daily history (e.g. near
+    # resolution, or very new markets). If we get fewer than 3 candles
+    # and fidelity is daily, retry at 60-min resolution and let the
+    # dedup/normalise step collapse it back to one-per-day.
+    if len(history) < 3 and fidelity >= 1440:
+        history = _fetch_raw(60) or history
     if not history:
         return pd.DataFrame(columns=["date", "probability", "token_id"])
 

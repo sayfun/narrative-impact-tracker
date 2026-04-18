@@ -561,6 +561,39 @@ def trending_markets_cached(_v: int = 1):
 
 # ── sidebar (inputs) ──────────────────────────────────────────────────────────
 
+def _trending_entry(row: dict) -> dict:
+    """
+    Build the entry_data dict for a trending market row, choosing a sensible
+    date window based on the market's own resolution date.
+
+    - suggested_end  = min(market end date, today)
+    - suggested_start = lookback of 30 days (short markets) or 90 days (long)
+    """
+    today = date.today()
+
+    # Parse market end date if available
+    raw_end = row.get("end_date_iso") or row.get("end_date") or ""
+    try:
+        mkt_end = pd.Timestamp(raw_end).date() if raw_end else today
+    except Exception:
+        mkt_end = today
+
+    suggested_end   = min(mkt_end, today)
+    days_to_end     = (mkt_end - today).days
+    # Short-lived / near-resolution markets → 30-day window
+    # Longer markets → 90-day window
+    lookback        = 30 if days_to_end <= 7 else 90
+    suggested_start = (suggested_end - timedelta(days=lookback))
+
+    return {
+        "token_id":        row["token_ids"][0] if row.get("token_ids") else row.get("token_id", ""),
+        "question":        row.get("question", ""),
+        "suggested_terms": "",
+        "suggested_start": suggested_start.isoformat(),
+        "suggested_end":   suggested_end.isoformat(),
+    }
+
+
 def render_sidebar():
     st.sidebar.image(
         "https://em-content.zobj.net/source/apple/391/bar-chart_1f4ca.png",
@@ -650,27 +683,13 @@ def render_sidebar():
         if trend_choice != trend_options[0]:
             idx = trend_options.index(trend_choice) - 1
             row = trending_df.iloc[idx]
-            trending_data = {
-                "token_id": row["token_ids"][0],
-                "question": row["question"],
-                # Reasonable defaults for a currently-active market:
-                # 90-day lookback ending today gives the movement context.
-                "suggested_terms": "",
-                "suggested_start": (date.today() - timedelta(days=90)).isoformat(),
-                "suggested_end":   date.today().isoformat(),
-            }
+            trending_data = _trending_entry(row.to_dict())
 
     # "Analyze →" button on the landing page stores a pick in session state.
     # Treat it exactly like selecting from the trending dropdown.
     session_pick = st.session_state.get("trending_pick")
     if session_pick and not featured_data and not trending_data:
-        trending_data = {
-            "token_id":       session_pick["token_id"],
-            "question":       session_pick["question"],
-            "suggested_terms": "",
-            "suggested_start": (date.today() - timedelta(days=90)).isoformat(),
-            "suggested_end":   date.today().isoformat(),
-        }
+        trending_data = _trending_entry(session_pick)
 
     # If either a featured OR trending market is chosen, it drives everything.
     entry_data = featured_data or trending_data
@@ -760,7 +779,7 @@ def render_sidebar():
     # Trending markets don't come with curated term lists — derive from the
     # market question as a sensible starting point the user will tune.
     if entry_data and not _default_terms_raw:
-        _q_words = [w.strip(".,?!\"'()") for w in entry_data["question"].split()]
+        _q_words = [w.strip(".,?!\"'():;") for w in entry_data["question"].split()]
         _derived = [w for w in _q_words if len(w) > 4][:4]
         _default_terms_raw = ", ".join(_derived) if _derived else "news, coverage"
     default_terms = _default_terms_raw or "Trump, Harris, election, president"
