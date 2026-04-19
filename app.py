@@ -872,6 +872,13 @@ def render_results(result: dict, inputs: dict):
     xcorr   = analysis.get("xcorr",   {})
     events  = analysis.get("events",  {})
 
+    # ── back button ──
+    if st.button("← New analysis", help="Return to the trending markets screen"):
+        st.session_state.pop("last_result", None)
+        st.session_state.pop("last_inputs", None)
+        st.session_state.pop("trending_pick", None)
+        st.rerun()
+
     # ── header ──
     st.title("Narrative Impact Tracker")
     st.caption(
