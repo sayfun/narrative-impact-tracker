@@ -977,7 +977,8 @@ def render_results(result: dict, inputs: dict):
 
     # ── Section 2b: EAI ──
     if features is not None and not features.empty and "eai" in features.columns:
-        mc_count = len(result.get("mc_articles") or [])
+        _mc = result.get("mc_articles")
+        mc_count = 0 if (_mc is None or (hasattr(_mc, "empty") and _mc.empty)) else len(_mc)
         st.subheader("2b — Epistemic Authority Index (EAI)")
 
         eai_caption = (
