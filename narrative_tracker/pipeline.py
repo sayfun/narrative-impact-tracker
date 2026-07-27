@@ -154,9 +154,14 @@ class NarrativePipeline:
         if verbose:
             print(f"[3/4] Fetching GDELT coverage timeline …")
             print(f"      Query: {gdelt_query}")
-        self.coverage_df = fetch_coverage_timeline(
-            gdelt_query, start=self.start, end=self.end
-        )
+        try:
+            self.coverage_df = fetch_coverage_timeline(
+                gdelt_query, start=self.start, end=self.end
+            )
+        except Exception as gdelt_err:
+            if verbose:
+                print(f"      ⚠ GDELT coverage failed: {gdelt_err} — continuing without coverage data")
+            self.coverage_df = pd.DataFrame()
         if verbose:
             print(f"      → {len(self.coverage_df)} daily coverage points")
 

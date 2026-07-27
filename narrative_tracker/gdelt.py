@@ -26,9 +26,9 @@ from typing import Optional
 # ── constants ────────────────────────────────────────────────────────────────
 
 GDELT_DOC_API  = "https://api.gdeltproject.org/api/v2/doc/doc"
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = (5, 20)    # (connect, read) — fail fast on Streamlit Cloud
 RATE_LIMIT_DELAY = 1.5       # seconds between requests (stay within GDELT limits)
-MAX_RETRIES     = 4          # retries on 429 / 5xx
+MAX_RETRIES     = 2          # retries on 429 / 5xx (was 4; shorter to stay within Cloud limits)
 
 
 # ── retry-aware GET ───────────────────────────────────────────────────────────

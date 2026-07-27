@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 GAMMA_BASE  = "https://gamma-api.polymarket.com"
 CLOB_BASE   = "https://clob.polymarket.com"
 DEFAULT_FIDELITY = 1440          # minutes → daily candles
-REQUEST_TIMEOUT  = 30            # seconds
+REQUEST_TIMEOUT  = (5, 20)       # (connect, read) seconds — fail fast on Streamlit Cloud
 
 
 # ── market discovery ─────────────────────────────────────────────────────────
@@ -133,33 +133,32 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
         for m in (data or []):
             _add_market(m)
 
-    # ── Pool A: currently trading, ranked by 24h volume ───────────────────────
-    # Catches today's hot markets regardless of all-time volume.
-    _fetch_markets_page({"limit": 200, "active": "true", "closed": "false",
-                         "order": "volume24hr", "ascending": "false", "offset": 0})
-    _fetch_markets_page({"limit": 200, "active": "true", "closed": "false",
-                         "order": "volume24hr", "ascending": "false", "offset": 200})
+    # ── Pools A + B: parallel fetch ───────────────────────────────────────────
+    # All page requests run in parallel so total wall-clock time ≈ slowest
+    # single request instead of sum-of-all (critical on Streamlit Cloud).
+    pool_params = [
+        # Pool A: currently trading by 24h volume
+        {"limit": 200, "active": "true", "closed": "false",
+         "order": "volume24hr", "ascending": "false", "offset": 0},
+        {"limit": 200, "active": "true", "closed": "false",
+         "order": "volume24hr", "ascending": "false", "offset": 200},
+        # Pool B: all markets by all-time volume — catches big historical markets
+        {"limit": 200, "order": "volume", "ascending": "false", "offset": 0},
+        {"limit": 200, "order": "volume", "ascending": "false", "offset": 200},
+        {"limit": 200, "order": "volume", "ascending": "false", "offset": 400},
+        {"limit": 200, "order": "volume", "ascending": "false", "offset": 600},
+    ]
 
-    # ── Pool B: all markets by all-time volume (no status filter) ─────────────
-    # Catches big historical markets ($1B+ volume) that may be archived.
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 0})
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 200})
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 400})
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 600})
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 800})
-    _fetch_markets_page({"limit": 200, "order": "volume", "ascending": "false", "offset": 1000})
+    with ThreadPoolExecutor(max_workers=len(pool_params)) as ex:
+        for _ in as_completed(
+            ex.submit(_fetch_markets_page, p) for p in pool_params
+        ):
+            pass
 
     # ── Pool C: recent events, filter by event title, add ALL sub-markets ─────
-    # The Gamma API's q= text-search parameter is broken (returns random markets
-    # by volume regardless of the query). Instead, we fetch recent events sorted
-    # by creation date and filter on the event TITLE client-side.
-    #
-    # This is the critical pool for new, low-volume markets (e.g. a Justin Bieber
-    # Coachella event with $8K volume would never appear in Pools A or B, but its
-    # event title matches the query immediately). When an event matches, we add
-    # ALL of its sub-markets so users can pick the exact outcome they want.
-    try:
-        for ev_offset in [0, 100, 200, 300]:
+    # Fetched in parallel across offsets; best-effort — A/B cover the rest.
+    def _fetch_events_page(ev_offset: int) -> None:
+        try:
             resp = requests.get(
                 events_url,
                 params={
@@ -170,13 +169,8 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
                 timeout=REQUEST_TIMEOUT,
             )
             if resp.status_code != 200 or not resp.content:
-                break
-            try:
-                events = resp.json() or []
-            except Exception:
-                break
-            if not events:
-                break
+                return
+            events = resp.json() or []
             for event in events:
                 event_title = event.get("title", "")
                 ev_score = sum(
@@ -184,12 +178,20 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
                     if re.search(r'\b' + re.escape(w) + r'\b', event_title.lower())
                 )
                 if ev_score == 0:
-                    continue  # event title has no query words — skip
-                # Add every sub-market from this matching event
+                    continue
                 for m in event.get("markets", []):
                     _add_market(m, event_score=ev_score)
+        except Exception:
+            pass
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            for _ in as_completed(
+                ex.submit(_fetch_events_page, off) for off in [0, 100, 200, 300]
+            ):
+                pass
     except Exception:
-        pass  # Pool C is best-effort; Pools A/B still run
+        pass
 
     # Minimum score thresholds.
     # Users rarely type market question verbatim — "lakers 2nd round" maps to

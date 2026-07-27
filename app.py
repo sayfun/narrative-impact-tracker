@@ -1366,6 +1366,7 @@ https://github.com/sayfun/narrative-impact-tracker
         except Exception as e:
             status.update(label="Failed", state="error")
             msg = str(e)
+            exc_type = type(e).__name__
             if "429" in msg or "Too Many Requests" in msg:
                 st.warning(
                     "**GDELT rate limit hit (429).** GDELT's free API allows ~1 request/second. "
@@ -1375,8 +1376,16 @@ https://github.com/sayfun/narrative-impact-tracker
                     "- Unticking 'Fetch article tone data' (much fewer requests)\n"
                     "- Waiting 60 seconds and running again"
                 )
+            elif "timeout" in msg.lower() or "timed out" in msg.lower() or "ReadTimeout" in exc_type:
+                st.error(
+                    f"**Request timed out ({exc_type}).** "
+                    "One of the upstream APIs (Polymarket or GDELT) did not respond in time. "
+                    "Try again — transient timeouts usually resolve on retry. "
+                    "If it persists, shorten the date range or use a featured market."
+                )
             else:
-                st.error(f"**Unexpected error:** {e}")
+                st.error(f"**{exc_type}:** {e}" if msg else f"**Error ({exc_type})** — no message. "
+                         "Check Streamlit Cloud logs for the full traceback.")
             return
 
         st.write(f"✓ Matched market: **{result['market_question']}**")
