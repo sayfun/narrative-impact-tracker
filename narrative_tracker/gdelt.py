@@ -346,3 +346,16 @@ def build_prediction_market_query(
     topic_clause = " OR ".join(capped_terms)
 
     return f"({market_clause}) ({topic_clause})"
+
+
+def build_topic_query(topic_terms: list[str]) -> str:
+    """
+    Build a GDELT query for general topic coverage — no market clause.
+
+    This is the "pure narrative" stream: all articles about the topic,
+    regardless of whether they mention prediction markets.  Use alongside
+    build_prediction_market_query() to separate general topic coverage
+    from market-influenced / market-reporting coverage.
+    """
+    capped = topic_terms[:4]
+    return " OR ".join(capped)

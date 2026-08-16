@@ -51,9 +51,25 @@ NARRATIVE_VARS = [
     "mean_pii_proxy",
     "eai",
     "mean_tone",
-    "volume_norm",
+    "volume_norm",         # market-mentioning GDELT stream
+    "volume_norm_topic",   # topic-only GDELT stream (no market clause)
     "rolling_3d_vol",
+    "rolling_3d_vol_topic",
 ]
+
+# Human-readable labels for Granger table display
+NARRATIVE_VAR_LABELS = {
+    "volume_norm":          "Coverage: market-mentioning",
+    "volume_norm_topic":    "Coverage: topic-only",
+    "rolling_3d_vol":       "Coverage 3d MA: market-mentioning",
+    "rolling_3d_vol_topic": "Coverage 3d MA: topic-only",
+    "mean_tone":            "Tone (GDELT)",
+    "mean_ers":             "Epistemic Register Score",
+    "mean_pcf":             "Probability Citation Freq.",
+    "mean_ncs":             "Narrative Closure Score",
+    "mean_pii_proxy":       "PII proxy",
+    "eai":                  "Epistemic Authority Index",
+}
 
 
 def _degenerate_xcorr(max_lag: int, reason: str) -> dict:

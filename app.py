@@ -42,15 +42,16 @@ st.set_page_config(
 # ── colour palette (matches CLI report for consistency) ───────────────────────
 
 C = {
-    "prob":     "#2166ac",
-    "coverage": "#d6604d",
-    "ers":      "#4dac26",
-    "pcf":      "#b8860b",
-    "ncs":      "#8b008b",
-    "shock_up": "#1a9641",
-    "shock_dn": "#d73027",
-    "neutral":  "#aaaaaa",
-    "bg":       "#fafafa",
+    "prob":           "#2166ac",
+    "coverage":       "#d6604d",   # market-mentioning stream (red)
+    "coverage_topic": "#2ca25f",   # topic-only stream (green)
+    "ers":            "#4dac26",
+    "pcf":            "#b8860b",
+    "ncs":            "#8b008b",
+    "shock_up":       "#1a9641",
+    "shock_dn":       "#d73027",
+    "neutral":        "#aaaaaa",
+    "bg":             "#fafafa",
 }
 
 
@@ -166,15 +167,17 @@ def run_pipeline_cached(
     analysis = run_full_analysis(aligned_for_analysis, pipe.shocks, verbose=False)
 
     return {
-        "market_question":  pipe.market_meta["question"],
-        "aligned":          aligned_for_analysis,
-        "shocks":           pipe.shocks,
-        "articles":         pipe.articles_df,
-        "mc_articles":      mc_articles,
-        "features_daily":   features_daily,
-        "fulltext_source":  fulltext_source,
-        "analysis":         analysis,
-        "summary":          pipe.summary(),
+        "market_question":   pipe.market_meta["question"],
+        "aligned":           aligned_for_analysis,
+        "shocks":            pipe.shocks,
+        "articles":          pipe.articles_df,
+        "mc_articles":       mc_articles,
+        "features_daily":    features_daily,
+        "fulltext_source":   fulltext_source,
+        "analysis":          analysis,
+        "summary":           pipe.summary(),
+        "gdelt_market_query": pipe.gdelt_market_query,
+        "gdelt_topic_query":  pipe.gdelt_topic_query,
     }
 
 
@@ -233,19 +236,36 @@ def fig_probability_coverage(aligned: pd.DataFrame, shocks: pd.DataFrame, title:
             annotation_font_color=colour,
         )
 
-    # ── Panel 2: coverage ──
+    # ── Panel 2: coverage — two streams ──
     vol_col = "volume_intensity" if "volume_intensity" in aligned.columns else "volume_norm"
     vol = aligned[vol_col].fillna(0)
 
+    # Topic-only stream (behind; filled)
+    if "volume_norm_topic" in aligned.columns:
+        vol_topic = aligned["volume_norm_topic"].fillna(0)
+        fig.add_trace(
+            go.Scatter(
+                x=dates, y=vol_topic,
+                mode="lines",
+                name="Topic coverage (all articles)",
+                fill="tozeroy",
+                line=dict(color=C["coverage_topic"], width=1.2),
+                fillcolor="rgba(44,162,95,0.12)",
+                hovertemplate="%{x|%b %d}: <b>%{y:.4f}</b> (topic)<extra></extra>",
+            ),
+            row=2, col=1,
+        )
+
+    # Market-mentioning stream (on top)
     fig.add_trace(
         go.Scatter(
             x=dates, y=vol,
             mode="lines",
-            name="Coverage intensity",
+            name="Market-mentioning coverage",
             fill="tozeroy",
             line=dict(color=C["coverage"], width=1.5),
             fillcolor="rgba(214,96,77,0.18)",
-            hovertemplate="%{x|%b %d}: <b>%{y:.4f}</b><extra></extra>",
+            hovertemplate="%{x|%b %d}: <b>%{y:.4f}</b> (market)<extra></extra>",
         ),
         row=2, col=1,
     )
@@ -881,8 +901,8 @@ def render_results(result: dict, inputs: dict):
     features = result["features_daily"]
     question = result["market_question"]
 
-    from narrative_tracker.gdelt import build_prediction_market_query
-    gdelt_query = build_prediction_market_query(inputs["topic_terms"][:4])
+    gdelt_query       = result.get("gdelt_market_query", "")
+    gdelt_topic_query = result.get("gdelt_topic_query", "")
 
     granger = analysis.get("granger", {})
     xcorr   = analysis.get("xcorr",   {})
@@ -939,18 +959,28 @@ def render_results(result: dict, inputs: dict):
     # ── Section 1: Timeline ──
     st.subheader("1 — Probability & Coverage Timeline")
     st.caption(
-        "Polymarket WIN probability (blue) and GDELT prediction-market coverage intensity (red). "
+        "Polymarket WIN probability (blue). "
+        "Red = market-mentioning GDELT coverage (articles that cite prediction markets). "
+        "Green = topic-only GDELT coverage (all articles about the topic). "
         "Dotted vertical lines = sharp probability movements."
     )
     fig1 = fig_probability_coverage(aligned, shocks, question)
     st.plotly_chart(fig1, use_container_width=True)
 
-    with st.expander("Methodological note: GDELT coverage metric"):
+    with st.expander("Methodological note: GDELT coverage streams"):
         st.markdown(
             "GDELT's *TimelineVol* returns a **relative volume intensity** — share of global "
             "GDELT traffic — not raw article counts. Suitable for detecting relative shifts; "
-            "do not interpret absolute values as coverage totals. "
-            "Coverage query: `" + gdelt_query + "`"
+            "do not interpret absolute values as coverage totals.\n\n"
+            "**Two parallel streams are shown:**\n\n"
+            "- 🔴 **Market-mentioning** — articles that discuss prediction markets *and* the topic. "
+            "Granger causality here is partly mechanical: the market is mentioned in the article, "
+            "so probability and coverage are not independent.  "
+            f"Query: `{gdelt_query}`\n\n"
+            "- 🟢 **Topic-only** — all articles about the topic, with no market clause. "
+            "This is the narratively meaningful stream: Granger causality here suggests "
+            "that probability movements genuinely *precede* (or follow) shifts in broader media framing.  "
+            f"Query: `{gdelt_topic_query}`"
         )
 
     with st.expander("🔍 Debug: raw probability data (click if chart is empty)"):
@@ -1069,14 +1099,20 @@ Each component is normalised to 0–1 before weighting. EAI = 0 means purely hed
     summary_df = granger.get("summary_table", pd.DataFrame())
 
     if not summary_df.empty:
-        # Style the significance column
+        from narrative_tracker.analysis import NARRATIVE_VAR_LABELS
+
+        display_df = summary_df.copy()
+        display_df["target"] = display_df["target"].map(
+            lambda t: NARRATIVE_VAR_LABELS.get(t, t)
+        )
+
         def style_sig(val):
             if val == "Yes":
                 return "color: #1a9641; font-weight: bold"
             return "color: #aaa"
 
         st.dataframe(
-            summary_df.style.map(style_sig, subset=["forward_sig"]),
+            display_df.style.map(style_sig, subset=["forward_sig"]),
             use_container_width=True,
             hide_index=True,
         )

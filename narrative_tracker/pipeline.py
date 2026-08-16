@@ -40,7 +40,9 @@ from narrative_tracker.gdelt import (
     fetch_articles_windowed,
     aggregate_daily_tone,
     build_prediction_market_query,
+    build_topic_query,
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ── main pipeline class ────────────────────────────────────────────────────────
@@ -101,13 +103,16 @@ class NarrativePipeline:
         self.manual_market_question = manual_market_question.strip()
 
         # populated by collect()
-        self.market_meta   = None
-        self.prob_df       = None
-        self.coverage_df   = None
-        self.articles_df   = None
-        self.tone_df       = None
-        self.shocks        = None
-        self._aligned      = None
+        self.market_meta        = None
+        self.prob_df            = None
+        self.coverage_df        = None       # market-mentioning GDELT stream
+        self.coverage_topic_df  = None       # topic-only GDELT stream (no market clause)
+        self.gdelt_market_query = ""
+        self.gdelt_topic_query  = ""
+        self.articles_df        = None
+        self.tone_df            = None
+        self.shocks             = None
+        self._aligned           = None
 
     # ── collection ─────────────────────────────────────────────────────────
 
@@ -147,29 +152,50 @@ class NarrativePipeline:
         if verbose:
             print(f"      → {len(self.prob_df)} daily data points")
 
-        # 3. Fetch GDELT coverage
-        gdelt_query = build_prediction_market_query(
+        # 3. Fetch GDELT coverage — two parallel streams
+        self.gdelt_market_query = build_prediction_market_query(
             self.topic_terms, include_polymarket=True
         )
+        self.gdelt_topic_query = build_topic_query(self.topic_terms)
         if verbose:
-            print(f"[3/4] Fetching GDELT coverage timeline …")
-            print(f"      Query: {gdelt_query}")
+            print(f"[3/4] Fetching GDELT coverage timelines (parallel) …")
+            print(f"      Market query: {self.gdelt_market_query}")
+            print(f"      Topic  query: {self.gdelt_topic_query}")
+
+        def _fetch(query):
+            return fetch_coverage_timeline(query, start=self.start, end=self.end)
+
+        market_df = topic_df = pd.DataFrame()
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            fut_market = ex.submit(_fetch, self.gdelt_market_query)
+            fut_topic  = ex.submit(_fetch, self.gdelt_topic_query)
+            for fut in as_completed([fut_market, fut_topic]):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
         try:
-            self.coverage_df = fetch_coverage_timeline(
-                gdelt_query, start=self.start, end=self.end
-            )
-        except Exception as gdelt_err:
+            market_df = fut_market.result()
+        except Exception as e:
             if verbose:
-                print(f"      ⚠ GDELT coverage failed: {gdelt_err} — continuing without coverage data")
-            self.coverage_df = pd.DataFrame()
+                print(f"      ⚠ GDELT market stream failed: {e}")
+        try:
+            topic_df = fut_topic.result()
+        except Exception as e:
+            if verbose:
+                print(f"      ⚠ GDELT topic stream failed: {e}")
+
+        self.coverage_df       = market_df
+        self.coverage_topic_df = topic_df
         if verbose:
-            print(f"      → {len(self.coverage_df)} daily coverage points")
+            print(f"      → market stream: {len(market_df)} daily points")
+            print(f"      → topic  stream: {len(topic_df)} daily points")
 
         if self._fetch_articles:
             if verbose:
                 print(f"[3b]  Fetching GDELT article list (paginated) …")
             self.articles_df = fetch_articles_windowed(
-                gdelt_query,
+                self.gdelt_market_query,
                 start=self.start,
                 end=self.end,
                 window_days=self.article_window_days,
@@ -223,7 +249,7 @@ class NarrativePipeline:
         merged["prob_delta_3d"] = merged["probability"].diff(3)
         merged["prob_pct_rank"] = merged["probability"].rank(pct=True)
 
-        # ── GDELT coverage volume ──
+        # ── GDELT market-mentioning coverage stream ──
         if self.coverage_df is not None and not self.coverage_df.empty:
             cov = self.coverage_df.copy()
             cov["date"] = _to_date_col(cov["date"])
@@ -239,6 +265,27 @@ class NarrativePipeline:
             merged["coverage_intensity"] = 0.0
             merged["volume_norm"]        = 0.0
             merged["rolling_3d_vol"]     = 0.0
+
+        # ── GDELT topic-only coverage stream ──
+        if self.coverage_topic_df is not None and not self.coverage_topic_df.empty:
+            cov_t = self.coverage_topic_df.copy()
+            cov_t["date"] = _to_date_col(cov_t["date"])
+            cov_t = cov_t.rename(columns={
+                "rolling_3d":       "rolling_3d_vol_topic",
+                "volume_intensity": "coverage_intensity_topic",
+                "volume_norm":      "volume_norm_topic",
+            })
+            t_merge_cols = ["date", "coverage_intensity_topic", "volume_norm_topic"]
+            if "rolling_3d_vol_topic" in cov_t.columns:
+                t_merge_cols.append("rolling_3d_vol_topic")
+            merged = merged.merge(cov_t[t_merge_cols], on="date", how="left")
+            merged["coverage_intensity_topic"] = merged["coverage_intensity_topic"].fillna(0.0)
+            merged["volume_norm_topic"]        = merged["volume_norm_topic"].fillna(0.0)
+            merged["rolling_3d_vol_topic"]     = merged.get("rolling_3d_vol_topic", pd.Series(0.0, index=merged.index)).fillna(0.0)
+        else:
+            merged["coverage_intensity_topic"] = 0.0
+            merged["volume_norm_topic"]        = 0.0
+            merged["rolling_3d_vol_topic"]     = 0.0
 
         # ── GDELT tone (from article-level aggregation) ──
         if self.tone_df is not None and not self.tone_df.empty:
