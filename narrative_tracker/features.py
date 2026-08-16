@@ -50,8 +50,9 @@ except OSError:
 # ── lexicons ──────────────────────────────────────────────────────────────────
 
 # High-certainty epistemic markers (raise ERS)
+# Removed bare \bwill\b — matches all grammatical future tense regardless of epistemic content.
 HIGH_CERTAINTY = [
-    r"\bwill\b", r"\bis (projected|expected|forecast|set|poised|on track|certain|sure) to\b",
+    r"\bis (projected|expected|forecast|set|poised|on track|certain|sure) to\b",
     r"\bguaranteed\b", r"\binevitable\b", r"\bundoubtedly\b", r"\bclearly\b",
     r"\bhas (secured|locked up|all but won|effectively won)\b",
     r"\bpresumptive\b", r"\bfrontrunner\b", r"\bheavy favou?rite\b",
@@ -60,9 +61,12 @@ HIGH_CERTAINTY = [
 ]
 
 # Low-certainty / hedging markers (lower ERS)
+# Removed \bif\b, \bshould\b, \bwould\b — match conditional/deontic/counterfactual uses
+# with no hedging signal. Replaced \bmay\b with an epistemic-only pattern to avoid
+# matching the month name "May" (re.IGNORECASE makes bare \bmay\b ambiguous).
 LOW_CERTAINTY = [
-    r"\bmight\b", r"\bmay\b", r"\bcould\b", r"\bpossibly\b", r"\bperhaps\b",
-    r"\bpotentially\b", r"\bif\b", r"\bshould\b", r"\bwould\b",
+    r"\bmight\b", r"\bcould\b", r"\bpossibly\b", r"\bperhaps\b", r"\bpotentially\b",
+    r"\bmay\s+(?:be|have|not|well|also|never|still|already)\b",
     r"\bit remains (unclear|uncertain|to be seen)\b",
     r"\b(tight|close|competitive|uncertain|unpredictable) (race|contest|election)\b",
     r"\btoo (early|close) to (call|say|tell)\b",

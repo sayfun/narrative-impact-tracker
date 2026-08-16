@@ -16,6 +16,7 @@ Key design decisions:
 import re
 import json
 import time
+import threading
 import requests
 import pandas as pd
 from datetime import datetime, timezone, timedelta
@@ -29,6 +30,23 @@ GAMMA_BASE  = "https://gamma-api.polymarket.com"
 CLOB_BASE   = "https://clob.polymarket.com"
 DEFAULT_FIDELITY = 1440          # minutes → daily candles
 REQUEST_TIMEOUT  = (5, 20)       # (connect, read) seconds — fail fast on Streamlit Cloud
+
+
+# ── shared helpers ────────────────────────────────────────────────────────────
+
+def _parse_token_ids(raw) -> list:
+    """Parse clobTokenIds from any representation the Gamma API may return."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, ValueError):
+            return []
+    return []
 
 
 # ── market discovery ─────────────────────────────────────────────────────────
@@ -46,19 +64,6 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
         condition_id, question, end_date_iso, active, volume, volume_24hr,
         liquidity, token_ids
     """
-
-    def _parse_token_ids(raw) -> list:
-        if raw is None:
-            return []
-        if isinstance(raw, list):
-            return raw
-        if isinstance(raw, str):
-            try:
-                parsed = json.loads(raw)
-                return parsed if isinstance(parsed, list) else []
-            except (json.JSONDecodeError, ValueError):
-                return []
-        return []
 
     def _market_row(m: dict) -> dict:
         return {
@@ -109,18 +114,17 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
     events_url  = f"{GAMMA_BASE}/events"
     all_rows: list[dict] = []
     seen_ids: set[str] = set()
+    _lock = threading.Lock()   # protects all_rows and seen_ids from concurrent writes
 
     def _add_market(m: dict, event_score: int = 0) -> None:
         """Parse one raw market dict and add it to all_rows if not seen."""
         row = _market_row(m)
-        if row["token_ids"] and row["question"] and row["condition_id"] not in seen_ids:
-            # Use the higher of question-level or event-title-level score.
-            # This ensures sub-markets inside a matching event (e.g. all 20
-            # "Will Bieber feature X?" sub-questions) rank highly even if the
-            # individual question only mentions one query word.
-            row["_score"] = max(_score(row["question"]), event_score)
-            all_rows.append(row)
-            seen_ids.add(row["condition_id"])
+        if row["token_ids"] and row["question"]:
+            with _lock:
+                if row["condition_id"] not in seen_ids:
+                    row["_score"] = max(_score(row["question"]), event_score)
+                    all_rows.append(row)
+                    seen_ids.add(row["condition_id"])
 
     def _fetch_markets_page(params: dict) -> None:
         resp = requests.get(markets_url, params=params, timeout=REQUEST_TIMEOUT)
@@ -150,10 +154,12 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
     ]
 
     with ThreadPoolExecutor(max_workers=len(pool_params)) as ex:
-        for _ in as_completed(
-            ex.submit(_fetch_markets_page, p) for p in pool_params
-        ):
-            pass
+        futures = [ex.submit(_fetch_markets_page, p) for p in pool_params]
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except Exception:
+                pass  # best-effort page fetch; partial results are usable
 
     # ── Pool C: recent events, filter by event title, add ALL sub-markets ─────
     # Fetched in parallel across offsets; best-effort — A/B cover the rest.
@@ -186,10 +192,12 @@ def search_markets(query: str, limit: int = 20, include_active: bool = True, inc
 
     try:
         with ThreadPoolExecutor(max_workers=4) as ex:
-            for _ in as_completed(
-                ex.submit(_fetch_events_page, off) for off in [0, 100, 200, 300]
-            ):
-                pass
+            futures = [ex.submit(_fetch_events_page, off) for off in [0, 100, 200, 300]]
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -284,19 +292,6 @@ def get_trending_markets(
         return pd.DataFrame()
     if not raw:
         return pd.DataFrame()
-
-    def _parse_token_ids(r):
-        if r is None:
-            return []
-        if isinstance(r, list):
-            return r
-        if isinstance(r, str):
-            try:
-                p = json.loads(r)
-                return p if isinstance(p, list) else []
-            except (json.JSONDecodeError, ValueError):
-                return []
-        return []
 
     today_ts = pd.Timestamp.now(tz="UTC")
 

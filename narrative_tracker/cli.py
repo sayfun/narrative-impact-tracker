@@ -38,7 +38,7 @@ import textwrap
 import os
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def _print_banner():
@@ -151,7 +151,7 @@ def cmd_run(args):
         market_question  = pipe.market_meta["question"],
         gdelt_query      = gdelt_query,
         start            = args.start,
-        end              = args.end or datetime.utcnow().strftime("%Y-%m-%d"),
+        end              = args.end or datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         features_daily   = features_daily,
     )
 

@@ -15,9 +15,9 @@ Output schema
     prob_delta_1d     float                 — 1-day probability change
     prob_delta_3d     float                 — 3-day probability change
     prob_pct_rank     float                 — percentile rank within window
-    article_count     int                   — GDELT daily article count
-    volume_norm       float                 — normalised coverage volume
-    rolling_3d_vol    float                 — 3-day rolling coverage volume
+    coverage_intensity float                — GDELT relative coverage intensity (dimensionless share)
+    volume_norm       float                 — normalised coverage intensity (0–1 within window)
+    rolling_3d_vol    float                 — 3-day rolling coverage intensity
     mean_tone         float                 — GDELT daily mean tone
     tone_std          float                 — daily tone standard deviation
     mean_positive     float
@@ -179,15 +179,11 @@ class NarrativePipeline:
             if verbose:
                 print(f"      → {len(self.articles_df)} articles collected")
 
-        # 4. Align
+        # 4. Align (detect_sharp_movements is called once inside _build_aligned_frame
+        #    and stored as self.shocks to avoid the redundant second call)
         if verbose:
             print(f"[4/4] Aligning time series …")
         self._aligned = self._build_aligned_frame()
-        self.shocks   = detect_sharp_movements(
-            self.prob_df,
-            threshold=self.shock_threshold,
-            window_days=self.shock_window,
-        )
         if verbose:
             print(f"      → {len(self._aligned)} aligned days")
             print(f"      → {len(self.shocks)} sharp movements detected "
@@ -232,17 +228,17 @@ class NarrativePipeline:
             cov = self.coverage_df.copy()
             cov["date"] = _to_date_col(cov["date"])
             cov = cov.rename(columns={"rolling_3d": "rolling_3d_vol"})
-            merged = merged.merge(
-                cov[["date", "article_count", "volume_norm", "rolling_3d_vol"]],
-                on="date", how="left"
-            )
-            merged["article_count"]  = merged["article_count"].fillna(0).astype(int)
-            merged["volume_norm"]    = merged["volume_norm"].fillna(0.0)
-            merged["rolling_3d_vol"] = merged["rolling_3d_vol"].fillna(0.0)
+            merge_cols = ["date", "volume_intensity", "volume_norm"]
+            if "rolling_3d_vol" in cov.columns:
+                merge_cols.append("rolling_3d_vol")
+            merged = merged.merge(cov[merge_cols], on="date", how="left")
+            merged["coverage_intensity"] = merged["volume_intensity"].fillna(0.0)
+            merged["volume_norm"]        = merged["volume_norm"].fillna(0.0)
+            merged["rolling_3d_vol"]     = merged.get("rolling_3d_vol", pd.Series(0.0, index=merged.index)).fillna(0.0)
         else:
-            merged["article_count"]  = 0
-            merged["volume_norm"]    = 0.0
-            merged["rolling_3d_vol"] = 0.0
+            merged["coverage_intensity"] = 0.0
+            merged["volume_norm"]        = 0.0
+            merged["rolling_3d_vol"]     = 0.0
 
         # ── GDELT tone (from article-level aggregation) ──
         if self.tone_df is not None and not self.tone_df.empty:
@@ -256,12 +252,13 @@ class NarrativePipeline:
             for col in ["mean_tone", "tone_std", "mean_positive", "mean_negative"]:
                 merged[col] = np.nan
 
-        # ── Shock flags ──
+        # ── Shock flags (computed once here; stored as self.shocks) ──
         shock_df = detect_sharp_movements(
             self.prob_df,
             threshold=self.shock_threshold,
             window_days=self.shock_window,
         )
+        self.shocks = shock_df
         shock_days = set(_to_date_col(shock_df["date"])) if not shock_df.empty else set()
         merged["is_shock"] = merged["date"].isin(shock_days)
         merged["shock_direction"] = merged["date"].map(
@@ -291,8 +288,8 @@ class NarrativePipeline:
             f"Probability : min={df['probability'].min():.2f}  "
                          f"max={df['probability'].max():.2f}  "
                          f"mean={df['probability'].mean():.2f}",
-            f"Coverage    : total articles={df['article_count'].sum():,}  "
-                         f"peak={df['article_count'].max():,}/day",
+            f"Coverage    : total intensity={df['coverage_intensity'].sum():.4f}  "
+                         f"peak={df['coverage_intensity'].max():.4f}/day (GDELT relative share)",
             f"Shocks      : {df['is_shock'].sum()} days with ≥{self.shock_threshold*100:.0f}pp movement",
             f"Tone data   : {'yes' if not df['mean_tone'].isna().all() else 'no (articles not fetched)'}",
         ]

@@ -122,8 +122,17 @@ def run_pipeline_cached(
                 window_days=14, max_per_window=200,
                 include_text=True, verbose=False,
             )
-        except Exception:
-            mc_articles = None   # fall through to GDELT headlines
+        except Exception as mc_err:
+            # mediacloud_client.py targets the retired v2 endpoint — calls fail silently.
+            # Surface the error so researchers know enrichment did not happen.
+            import streamlit as _st
+            _st.warning(
+                f"⚠️ **MediaCloud enrichment failed** ({type(mc_err).__name__}: {mc_err}). "
+                "The built-in client targets a retired API endpoint (v2). "
+                "Falling back to GDELT headlines. To use full-text analysis, "
+                "use the `mediacloud` pip package directly (see `run_anthropic_ipo_paper.py`)."
+            )
+            mc_articles = None
 
     # ── Feature extraction (full-text if MediaCloud succeeded, else headlines) ──
     articles_for_features = mc_articles if (mc_articles is not None and not mc_articles.empty) else pipe.articles_df
@@ -436,7 +445,7 @@ def fig_eai(aligned: pd.DataFrame, features_daily: pd.DataFrame, shocks: pd.Data
 
     dates = pd.to_datetime(merged["date"])
     prob  = merged["probability"]
-    eai   = merged["eai_smooth"].fillna(method=None)
+    eai   = merged["eai_smooth"]   # NaN kept where EAI is genuinely absent; Plotly breaks line
 
     fig = make_subplots(
         rows=2, cols=1,
@@ -742,6 +751,10 @@ def render_sidebar():
             selected_row    = markets_df.iloc[market_index]
             market_question = selected_row["question"]
             token_ids       = selected_row["token_ids"]
+            # BUG 2: pass the selected token directly so the pipeline doesn't
+            # re-search with default filter settings, potentially matching a
+            # different market at the same index.
+            manual_token    = token_ids[0] if token_ids else ""
         elif markets_df is not None and markets_df.empty:
             st.sidebar.warning(
                 f"No markets found for **\"{search_query}\"**. "
@@ -868,6 +881,9 @@ def render_results(result: dict, inputs: dict):
     features = result["features_daily"]
     question = result["market_question"]
 
+    from narrative_tracker.gdelt import build_prediction_market_query
+    gdelt_query = build_prediction_market_query(inputs["topic_terms"][:4])
+
     granger = analysis.get("granger", {})
     xcorr   = analysis.get("xcorr",   {})
     events  = analysis.get("events",  {})
@@ -934,7 +950,7 @@ def render_results(result: dict, inputs: dict):
             "GDELT's *TimelineVol* returns a **relative volume intensity** — share of global "
             "GDELT traffic — not raw article counts. Suitable for detecting relative shifts; "
             "do not interpret absolute values as coverage totals. "
-            "Coverage query: `" + inputs.get("gdelt_query", "") + "`"
+            "Coverage query: `" + gdelt_query + "`"
         )
 
     with st.expander("🔍 Debug: raw probability data (click if chart is empty)"):
@@ -1152,8 +1168,6 @@ Each component is normalised to 0–1 before weighting. EAI = 0 means purely hed
             help="Daily ERS, PCF, NCS, PII aggregates",
         )
 
-    from narrative_tracker.gdelt import build_prediction_market_query
-    gdelt_query = build_prediction_market_query(inputs["topic_terms"][:4])
     html_report = build_html_report(result, gdelt_query, inputs["start"], inputs["end"])
     dl3.download_button(
         "narrative_impact_report.html",

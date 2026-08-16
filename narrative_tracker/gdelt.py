@@ -28,7 +28,7 @@ from typing import Optional
 GDELT_DOC_API  = "https://api.gdeltproject.org/api/v2/doc/doc"
 REQUEST_TIMEOUT = (5, 20)    # (connect, read) — fail fast on Streamlit Cloud
 RATE_LIMIT_DELAY = 1.5       # seconds between requests (stay within GDELT limits)
-MAX_RETRIES     = 2          # retries on 429 / 5xx (was 4; shorter to stay within Cloud limits)
+MAX_RETRIES     = 2          # 2 attempts total (1 retry); backoff: 2s
 
 
 # ── retry-aware GET ───────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def _gdelt_get(params: dict) -> requests.Response:
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt < MAX_RETRIES - 1:
                 time.sleep(delay)
-                delay *= 2   # exponential backoff: 2s → 4s → 8s → 16s
+                delay *= 2   # exponential backoff: 2s (single retry)
                 continue
         resp.raise_for_status()
     resp.raise_for_status()
@@ -134,13 +134,16 @@ def fetch_coverage_timeline(
 
     df = pd.DataFrame(series_data)
     df = df.rename(columns={"date": "date_str", "value": "volume_intensity"})
-    df["date"] = pd.to_datetime(df["date_str"], format="%Y%m%dT%H%M%SZ", utc=True)
-    # volume_intensity is GDELT's relative volume metric (not raw article count).
-    # It represents share of global GDELT coverage on that day — multiply by ~10M
-    # for a rough article-count proxy, but treat as ordinal in analyses.
+    # volume_intensity is GDELT's relative volume metric (a dimensionless share of global
+    # GDELT traffic, NOT raw article counts). Keep as float throughout.
     df["volume_intensity"] = pd.to_numeric(df["volume_intensity"], errors="coerce").fillna(0)
-    # Keep 'article_count' as an alias for backward compatibility (treat as intensity proxy)
-    df["article_count"] = df["volume_intensity"]
+
+    # Normalise timestamps and aggregate to daily — GDELT TimelineVol returns 15-min
+    # or hourly granularity for windows under ~1 week. Without daily aggregation,
+    # sub-daily rows all normalise to the same midnight date and multiply the base
+    # frame on merge, corrupting downstream statistics (BUG 3).
+    df["date"] = pd.to_datetime(df["date_str"], format="%Y%m%dT%H%M%SZ", utc=True).dt.normalize()
+    df = df.groupby("date", as_index=False)["volume_intensity"].sum()
 
     # Normalise within window
     max_val = df["volume_intensity"].max()
@@ -149,7 +152,7 @@ def fetch_coverage_timeline(
     if smooth:
         df["rolling_3d"] = df["volume_intensity"].rolling(3, center=True, min_periods=1).mean()
 
-    df = df[["date", "volume_intensity", "article_count", "volume_norm"] + (["rolling_3d"] if smooth else [])]
+    df = df[["date", "volume_intensity", "volume_norm"] + (["rolling_3d"] if smooth else [])]
     return df.sort_values("date").reset_index(drop=True)
 
 

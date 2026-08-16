@@ -20,7 +20,7 @@ clarity and interpretive honesty over visual polish.
 
 import io
 import base64
-from datetime import datetime
+from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
@@ -324,7 +324,7 @@ def generate_report(
     start / end       : Analysis window date strings.
     features_daily    : Daily narrative features (optional).
     """
-    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     # ── Summary stats ──
     n_days     = len(aligned_df)

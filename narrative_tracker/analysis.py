@@ -41,6 +41,42 @@ from typing import Optional
 
 # ── stationarity ──────────────────────────────────────────────────────────────
 
+# Narrative variables in reporting priority order. Article-level indices come
+# first so that headline results describe them rather than the coarser
+# coverage-volume proxies, which are often zero for niche queries.
+NARRATIVE_VARS = [
+    "mean_ers",
+    "mean_pcf",
+    "mean_ncs",
+    "mean_pii_proxy",
+    "eai",
+    "mean_tone",
+    "volume_norm",
+    "rolling_3d_vol",
+]
+
+
+def _degenerate_xcorr(max_lag: int, reason: str) -> dict:
+    """
+    Uniform empty return for cross-correlation on unusable input.
+
+    `lags` and `correlations` are deliberately empty rather than zero-filled.
+    Both app.py and report.py gate chart rendering on `if xcorr.get("lags")`,
+    then format `peak_corr` with `:.3f`; returning populated lags alongside a
+    null peak would pass that guard and raise on the format. Empty lists make
+    the existing guards do the right thing.
+    """
+    return {
+        "lags":         [],
+        "correlations": [],
+        "peak_lag":     None,
+        "peak_corr":    None,
+        "target":       None,
+        "n":            0,
+        "interpretation": f"Cross-correlation not computed: {reason}.",
+    }
+
+
 def adf_test(series: pd.Series, name: str = "series") -> dict:
     """
     Augmented Dickey-Fuller test for stationarity.
@@ -93,32 +129,58 @@ def prepare_for_granger(
     aligned_df: pd.DataFrame,
     prob_col:   str = "probability",
     cov_col:    str = "volume_norm",
+    keep_cols:  Optional[list[str]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Prepare the aligned DataFrame for Granger testing.
 
-    Applies first differencing to non-stationary series and returns
-    the prepared DataFrame plus a dict of ADF test results.
+    Applies first differencing and returns the prepared DataFrame plus a
+    dict of ADF test results.
+
+    Parameters
+    ----------
+    keep_cols : Narrative variable columns that must survive into the
+                prepared frame. Callers that intend to test article-level
+                indices (mean_ers, mean_pcf, ...) MUST pass them here.
 
     Returns (prepared_df, stationarity_report)
+
+    Note
+    ----
+    Rows are dropped only where the probability series is missing. Narrative
+    columns are retained with their NaNs intact so that a variable which is
+    sparse on some days does not shrink the usable sample for every other
+    variable. Per-variable dropna happens at test time.
     """
-    df = aligned_df[["date", prob_col, cov_col]].copy().dropna()
-    df = df.sort_values("date").reset_index(drop=True)
+    targets = list(keep_cols) if keep_cols else []
+    if cov_col and cov_col not in targets:
+        targets.append(cov_col)
+
+    cols = ["date", prob_col] + [c for c in targets if c in aligned_df.columns]
+    # de-duplicate while preserving order
+    seen, ordered = set(), []
+    for c in cols:
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+
+    df = aligned_df[ordered].copy()
+    df = df.dropna(subset=[prob_col]).sort_values("date").reset_index(drop=True)
 
     stationarity = {}
-
-    # Test levels
-    stationarity[f"{prob_col}_levels"] = adf_test(df[prob_col], f"probability (levels)")
-    stationarity[f"{cov_col}_levels"]  = adf_test(df[cov_col],  f"coverage volume (levels)")
-
-    # First differences
+    stationarity[f"{prob_col}_levels"] = adf_test(df[prob_col], "probability (levels)")
     df[f"d_{prob_col}"] = df[prob_col].diff()
-    df[f"d_{cov_col}"]  = df[cov_col].diff()
+    stationarity[f"{prob_col}_diff"] = adf_test(
+        df[f"d_{prob_col}"].dropna(), "Δprobability (1st diff)")
 
-    stationarity[f"{prob_col}_diff"] = adf_test(df[f"d_{prob_col}"].dropna(), "Δprobability (1st diff)")
-    stationarity[f"{cov_col}_diff"]  = adf_test(df[f"d_{cov_col}"].dropna(),  "Δcoverage (1st diff)")
+    for col in ordered:
+        if col in ("date", prob_col):
+            continue
+        stationarity[f"{col}_levels"] = adf_test(df[col].dropna(), f"{col} (levels)")
+        df[f"d_{col}"] = df[col].diff()
+        stationarity[f"{col}_diff"] = adf_test(df[f"d_{col}"].dropna(), f"Δ{col}")
 
-    return df.dropna().reset_index(drop=True), stationarity
+    return df.reset_index(drop=True), stationarity
 
 
 # ── granger causality ─────────────────────────────────────────────────────────
@@ -156,12 +218,23 @@ def run_granger_tests(
         interpretation     : human-readable summary string
     """
     if target_cols is None:
-        candidates = ["volume_norm", "mean_tone", "mean_ers", "mean_pcf",
-                      "mean_ncs", "rolling_3d_vol"]
-        target_cols = [c for c in candidates if c in aligned_df.columns]
+        target_cols = [c for c in NARRATIVE_VARS if c in aligned_df.columns]
 
-    df, stationarity = prepare_for_granger(aligned_df, prob_col)
-    prob_series = f"d_{prob_col}" if use_diff else prob_col
+    # Retain every requested target through preparation. Passing target_cols
+    # here is essential: without it the frame is subset to the coverage column
+    # alone and all article-level indices are silently dropped before testing.
+    df, stationarity = prepare_for_granger(
+        aligned_df, prob_col, keep_cols=target_cols)
+
+    # ADF-conditioned differencing: only difference a series if ADF finds it
+    # non-stationary (or inconclusive). Differencing a stationary series
+    # unnecessarily introduces moving-average structure and reduces power.
+    def _needs_diff(col_name: str) -> bool:
+        result = stationarity.get(f"{col_name}_levels", {})
+        is_stat = result.get("is_stationary")
+        return is_stat is not True  # non-stationary or unknown → difference
+
+    prob_series = f"d_{prob_col}" if (use_diff and _needs_diff(prob_col)) else prob_col
 
     results = {}
     summary_rows = []
@@ -171,13 +244,22 @@ def run_granger_tests(
             continue
 
         d_target = f"d_{target}"
-        df[d_target] = df[target].diff()
+        if d_target not in df.columns:
+            df[d_target] = df[target].diff()
 
-        target_series = d_target if use_diff else target
-        stationarity[f"{target}_diff"] = adf_test(df[d_target].dropna(), f"Δ{target}")
+        target_series = d_target if (use_diff and _needs_diff(target)) else target
 
         clean = df[[prob_series, target_series]].dropna()
         if len(clean) < max_lag * 3 + 5:
+            results[target] = {
+                "error": f"insufficient observations after differencing "
+                         f"(n={len(clean)}, need >= {max_lag * 3 + 5})"
+            }
+            continue
+        if clean[target_series].nunique() <= 1 or clean[prob_series].nunique() <= 1:
+            results[target] = {
+                "error": "constant series after differencing; Granger test undefined"
+            }
             continue
 
         lag_results = {}
@@ -203,14 +285,17 @@ def run_granger_tests(
                     "reverse_sig": rev_p < 0.05,
                 }
 
-            # Best lag = smallest forward p-value
-            best_lag    = min(lag_results, key=lambda k: lag_results[k]["forward_p"])
-            best_fwd_p  = lag_results[best_lag]["forward_p"]
-            best_rev_p  = lag_results[best_lag]["reverse_p"]
+            # Best lag = smallest forward p-value across lag_results.
+            # Apply per-variable Bonferroni correction (multiply by number of lags
+            # tested) to account for multiple comparisons across lag orders.
+            best_lag        = min(lag_results, key=lambda k: lag_results[k]["forward_p"])
+            best_fwd_p_raw  = lag_results[best_lag]["forward_p"]
+            best_fwd_p      = min(best_fwd_p_raw * max_lag, 1.0)   # Bonferroni corrected
+            best_rev_p      = lag_results[best_lag]["reverse_p"]
 
             results[target] = {"lags": lag_results, "best_lag": best_lag}
 
-            # Interpretation flag
+            # Interpretation flag (uses Bonferroni-corrected p for forward direction)
             if best_fwd_p < 0.05 and best_rev_p >= 0.05:
                 flag = "✓ Unidirectional: prob→narrative"
             elif best_fwd_p < 0.05 and best_rev_p < 0.05:
@@ -221,12 +306,13 @@ def run_granger_tests(
                 flag = "– No significant Granger relationship"
 
             summary_rows.append({
-                "target":       target,
-                "best_lag_days": best_lag,
-                "forward_p":    best_fwd_p,
-                "reverse_p":    best_rev_p,
-                "forward_sig":  "Yes" if best_fwd_p < 0.05 else "No",
-                "direction":    flag,
+                "target":          target,
+                "best_lag_days":   best_lag,
+                "forward_p_raw":   best_fwd_p_raw,
+                "forward_p":       best_fwd_p,        # Bonferroni corrected
+                "reverse_p":       best_rev_p,
+                "forward_sig":     "Yes" if best_fwd_p < 0.05 else "No",
+                "direction":       flag,
             })
 
         except Exception as e:
@@ -272,8 +358,27 @@ def cross_correlation_analysis(
     Negative lag = narrative leads probability (media → prediction market)
 
     Returns dict with lags, correlations, peak_lag, peak_correlation.
+
+    Note
+    ----
+    `target_col` defaults to the coverage-volume column for backward
+    compatibility. To correlate probability against an article-level index,
+    pass it explicitly, or use `cross_correlation_all()` to sweep every
+    available narrative variable.
     """
+    if target_col not in aligned_df.columns:
+        return _degenerate_xcorr(max_lag, f"'{target_col}' not present in frame")
+
     df = aligned_df[["date", prob_col, target_col]].dropna().sort_values("date")
+
+    if len(df) < 3:
+        return _degenerate_xcorr(max_lag, f"insufficient observations (n={len(df)})")
+    if df[target_col].nunique() <= 1:
+        return _degenerate_xcorr(
+            max_lag, f"'{target_col}' is constant; correlation undefined")
+    if df[prob_col].nunique() <= 1:
+        return _degenerate_xcorr(
+            max_lag, f"'{prob_col}' is constant; correlation undefined")
 
     p = df[prob_col].values
     t = df[target_col].values
@@ -304,19 +409,60 @@ def cross_correlation_analysis(
         "correlations": corrs,
         "peak_lag":     peak_lag,
         "peak_corr":    peak_corr,
+        "target":       target_col,
+        "n":            len(df),
         "interpretation": (
-            f"Peak cross-correlation r={peak_corr:.3f} at lag={peak_lag} days. "
+            f"Peak cross-correlation r={peak_corr:.3f} at lag={peak_lag} days "
+            f"({target_col}, n={len(df)}). "
             + (
-                f"Probability leads coverage by {peak_lag} days "
+                f"Probability leads {target_col} by {peak_lag} days "
                 "(consistent with market-to-narrative influence)."
                 if peak_lag > 0
-                else f"Coverage leads probability by {abs(peak_lag)} days "
+                else f"{target_col} leads probability by {abs(peak_lag)} days "
                 "(consistent with narrative-to-market influence)."
                 if peak_lag < 0
                 else "Peak correlation at lag 0 (contemporaneous)."
             )
         ),
     }
+
+
+def cross_correlation_all(
+    aligned_df: pd.DataFrame,
+    prob_col:   str = "probability",
+    target_cols: Optional[list[str]] = None,
+    max_lag:    int = 10,
+) -> dict:
+    """
+    Run cross_correlation_analysis() for every available narrative variable.
+
+    Returns {target_col: xcorr_dict}. Degenerate variables (absent, constant,
+    or too short) are included with a null peak and an explanatory message,
+    so callers can distinguish "not computed" from "computed, no signal".
+    """
+    if target_cols is None:
+        target_cols = [c for c in NARRATIVE_VARS if c in aligned_df.columns]
+    return {
+        col: cross_correlation_analysis(aligned_df, prob_col, col, max_lag)
+        for col in target_cols
+    }
+
+
+def select_primary_target(aligned_df: pd.DataFrame) -> Optional[str]:
+    """
+    Choose the narrative variable that headline results should report on.
+
+    Prefers article-level indices over coverage-volume proxies, and skips any
+    column that is absent, all-NaN or constant. Returns None when the frame
+    carries no usable narrative variable at all.
+    """
+    for col in NARRATIVE_VARS:
+        if col not in aligned_df.columns:
+            continue
+        s = aligned_df[col].dropna()
+        if len(s) >= 3 and s.nunique() > 1:
+            return col
+    return None
 
 
 # ── event study ───────────────────────────────────────────────────────────────
@@ -478,9 +624,20 @@ def run_full_analysis(
 
     if verbose:
         print("  → Cross-correlation analysis")
+    primary = None
     try:
-        xcorr = cross_correlation_analysis(aligned_df)
+        # Sweep every narrative variable, then surface the highest-priority
+        # usable one as the flat `xcorr` result for backward compatibility.
+        xcorr_all = cross_correlation_all(aligned_df)
+        primary = select_primary_target(aligned_df)
+        if primary and primary in xcorr_all:
+            xcorr = xcorr_all[primary]
+        else:
+            xcorr = {**_empty_xcorr,
+                     "interpretation": "Cross-correlation skipped "
+                                       "(no usable narrative variable in frame)."}
     except Exception as e:
+        xcorr_all = {}
         xcorr = {**_empty_xcorr,
                  "interpretation": f"Cross-correlation failed: {e}"}
 
@@ -498,7 +655,9 @@ def run_full_analysis(
         print(f"\n{events['interpretation']}")
 
     return {
-        "granger": granger,
-        "xcorr":   xcorr,
-        "events":  events,
+        "granger":        granger,
+        "xcorr":          xcorr,       # primary variable, flat shape (legacy)
+        "xcorr_all":      xcorr_all,   # {variable: xcorr_dict}
+        "primary_target": primary,     # which variable `xcorr` describes
+        "events":         events,
     }
